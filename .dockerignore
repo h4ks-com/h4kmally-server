@@ -1,0 +1,13 @@
+server-bin
+server.log
+data/
+skins/*.png
+skins/*.jpg
+skins/*.jpeg
+skins/*.gif
+skins/*.webp
+skins/*.svg
+.env
+.vscode/
+.idea/
+.DS_Store

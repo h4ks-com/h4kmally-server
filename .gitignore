@@ -1,0 +1,28 @@
+# Binary
+server-bin
+
+# Logs
+server.log
+
+# Runtime data
+data/
+
+# Skin images (admin-managed, not tracked in git)
+skins/*.png
+skins/*.jpg
+skins/*.jpeg
+skins/*.gif
+skins/*.webp
+skins/*.svg
+
+# Environment (contains secrets)
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+sigmally-server
