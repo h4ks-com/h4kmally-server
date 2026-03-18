@@ -337,10 +337,15 @@ func (e *Engine) processPlayerEject(p *Player) {
 	}
 	p.lastEjectTick = e.tickNum
 
+	// Derive eject mass from configured eject size (mass = size²/100).
+	// Mass-conserving: parent loses exactly what the blob carries.
+	ejectSize := e.Cfg.EjectSize
+	ejectMass := ejectSize * ejectSize / 100.0
+
 	for _, c := range p.Cells {
 		// Don't eject if it would reduce cell below start size
 		startMass := e.Cfg.StartSize * e.Cfg.StartSize / 100.0
-		if c.Mass()-EjectMassLoss < startMass {
+		if c.Mass()-ejectMass < startMass {
 			continue
 		}
 
@@ -358,8 +363,8 @@ func (e *Engine) processPlayerEject(p *Player) {
 		nx := math.Cos(angle)
 		ny := math.Sin(angle)
 
-		// Ogar: parent loses ejectMassLoss (15), blob gets ejectMass (13). 2 mass vanishes.
-		c.SetMass(c.Mass() - EjectMassLoss)
+		// Mass-conserving: parent loses exactly what the blob carries.
+		c.SetMass(c.Mass() - ejectMass)
 		e.updated = append(e.updated, c)
 
 		// Spawn offset: cell edge + 16 padding (Ogar: cell.getSize() + 16)
@@ -368,7 +373,7 @@ func (e *Engine) processPlayerEject(p *Player) {
 			c.X+nx*spawnDist, c.Y+ny*spawnDist,
 			nx*EjectBoostV0, ny*EjectBoostV0,
 			c.R, c.G, c.B,
-			math.Sqrt(EjectBlobMass*100.0), // size from mass (Ogar: mass 13 → size 36.06)
+			ejectSize,
 		)
 		e.cells[ej.ID] = ej
 	}
@@ -381,8 +386,6 @@ const (
 	BoostMinSq     = 2.0   // stop boosting when velocity² < this (Ogar uses distanceSq < 2)
 	SplitBoostV0   = 80.0  // initial split speed (Ogar: ~78-82, nearly constant)
 	EjectBoostV0   = 100.0 // initial eject speed (Ogar: ejectSpeed = 100)
-	EjectMassLoss  = 15.0  // mass removed from parent per eject (Ogar: ejectMassLoss = 15)
-	EjectBlobMass  = 13.0  // mass of created eject blob (Ogar: ejectMass = 13)
 	EjectMinMass   = 32.0  // minimum cell mass to eject (Ogar: playerMinMassEject = 32)
 	EjectSpawnPad  = 16.0  // extra offset from cell edge for spawn position (Ogar: +16)
 	EjectSpread    = 0.0524 // random angle spread in radians (±3°)
