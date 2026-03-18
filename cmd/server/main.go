@@ -64,8 +64,17 @@ func main() {
 	cfg.VirusMaxSize = envFloat("VIRUS_MAX_SIZE", cfg.VirusMaxSize)
 	cfg.VirusFeedSize = envFloat("VIRUS_FEED_SIZE", cfg.VirusFeedSize)
 	cfg.VirusSplit = envInt("VIRUS_SPLIT", cfg.VirusSplit)
+
+	botCount := envInt("BOT_COUNT", 0)
+
 	engine := game.NewEngine(cfg)
 	server := api.NewServer(engine)
+
+	// Start server-side bots
+	var botMgr *game.BotManager
+	if botCount > 0 {
+		botMgr = game.NewBotManager(engine, botCount)
+	}
 
 	// Initialize auth (Logto OAuth2)
 	logtoEndpoint := os.Getenv("LOGTO_ENDPOINT")
@@ -137,6 +146,9 @@ func main() {
 
 		for range ticker.C {
 			updated, eaten, removed := engine.Tick()
+			if botMgr != nil {
+				botMgr.Tick()
+			}
 			server.Broadcast(updated, eaten, removed)
 
 			// Broadcast leaderboard periodically
@@ -162,6 +174,7 @@ func main() {
 	fmt.Printf("  HTTP      : http://localhost%s\n", addr)
 	fmt.Println("  Map       : 14142 x 14142")
 	fmt.Printf("  Tick Rate : %v\n", cfg.TickRate)
+	fmt.Printf("  Bots      : %d\n", botCount)
 	fmt.Println("====================================")
 
 	log.Fatal(http.ListenAndServe(addr, handler))
