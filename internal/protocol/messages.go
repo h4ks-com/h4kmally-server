@@ -1,8 +1,6 @@
 package protocol
 
 import (
-	"encoding/binary"
-
 	"github.com/h4ks-com/h4kmally-server/internal/game"
 )
 
@@ -117,15 +115,11 @@ func BuildLeaderboardFFA(st *ShuffleTable, entries []game.LeaderEntry, myName st
 // --- Helpers ---
 
 func appendU16(buf []byte, v uint16) []byte {
-	b := make([]byte, 2)
-	binary.LittleEndian.PutUint16(b, v)
-	return append(buf, b...)
+	return append(buf, byte(v), byte(v>>8))
 }
 
 func appendU32(buf []byte, v uint32) []byte {
-	b := make([]byte, 4)
-	binary.LittleEndian.PutUint32(b, v)
-	return append(buf, b...)
+	return append(buf, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
 }
 
 func appendI16(buf []byte, v int16) []byte {

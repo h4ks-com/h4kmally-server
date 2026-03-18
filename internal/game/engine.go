@@ -23,6 +23,14 @@ type Engine struct {
 	players map[uint32]*Player
 	grid    *SpatialGrid // spatial hash for fast queries
 
+	// Running counters (avoid O(N) scans)
+	foodCount  int
+	virusCount int
+
+	// Pre-allocated collision buffers (reused each tick)
+	active   []*Cell
+	toRemove map[uint32]bool
+
 	// Per-tick diff for protocol broadcast
 	tickNum uint64
 	updated []*Cell    // cells that were added or moved this tick
@@ -45,10 +53,12 @@ type LeaderEntry struct {
 // NewEngine creates a new game engine.
 func NewEngine(cfg Config) *Engine {
 	e := &Engine{
-		Cfg:     cfg,
-		cells:   make(map[uint32]*Cell, 4096),
-		players: make(map[uint32]*Player, 64),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Cfg:      cfg,
+		cells:    make(map[uint32]*Cell, 4096),
+		players:  make(map[uint32]*Player, 64),
+		grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		active:   make([]*Cell, 0, 256),
+		toRemove: make(map[uint32]bool, 64),
 	}
 	e.spawnInitialFood()
 	e.spawnInitialViruses()
@@ -60,6 +70,7 @@ func (e *Engine) spawnInitialFood() {
 		c := NewFood(e.Cfg)
 		e.cells[c.ID] = c
 	}
+	e.foodCount = e.Cfg.FoodCount
 }
 
 func (e *Engine) spawnInitialViruses() {
@@ -67,6 +78,7 @@ func (e *Engine) spawnInitialViruses() {
 		c := NewVirus(e.Cfg)
 		e.cells[c.ID] = c
 	}
+	e.virusCount = e.Cfg.VirusCount
 }
 
 // AddPlayer adds a player to the game (does not spawn cells yet).
@@ -203,8 +215,7 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 	}
 
 	// Snapshot removed and clear for next tick
-	removed = make([]uint32, len(e.removed))
-	copy(removed, e.removed)
+	removed = append(removed, e.removed...)
 	e.removed = e.removed[:0]
 
 	return e.updated, e.eaten, removed
@@ -222,13 +233,10 @@ func (e *Engine) AllCells() []*Cell {
 }
 
 func (e *Engine) spawnFood() {
-	foodCount := 0
-	for _, c := range e.cells {
-		if c.Type == CellFood {
-			foodCount++
-		}
+	toSpawn := e.Cfg.FoodCount - e.foodCount
+	if toSpawn <= 0 {
+		return
 	}
-	toSpawn := e.Cfg.FoodCount - foodCount
 	if toSpawn > e.Cfg.FoodSpawnPer {
 		toSpawn = e.Cfg.FoodSpawnPer
 	}
@@ -253,20 +261,15 @@ func (e *Engine) spawnFood() {
 		c.Y = bestY
 		e.cells[c.ID] = c
 		e.grid.Insert(c) // add to grid so subsequent spawns see it
+		e.foodCount++
 	}
 }
 
 func (e *Engine) spawnViruses() {
-	virusCount := 0
-	for _, c := range e.cells {
-		if c.Type == CellVirus {
-			virusCount++
-		}
-	}
-	for virusCount < e.Cfg.VirusCount {
+	for e.virusCount < e.Cfg.VirusCount {
 		c := NewVirus(e.Cfg)
 		e.cells[c.ID] = c
-		virusCount++
+		e.virusCount++
 	}
 }
 
@@ -488,12 +491,13 @@ func (e *Engine) resolveCollisions() {
 	// Collect only cells that CAN interact (players, viruses, ejects).
 	// Food is passive — it only gets eaten BY players, so we check food
 	// from the player's perspective using the grid.
-	var active []*Cell
+	active := e.active[:0]
 	for _, c := range e.cells {
 		if c.Type != CellFood {
 			active = append(active, c)
 		}
 	}
+	e.active = active
 
 	// Also include all player cells (they eat food via grid query)
 	// Sort active by size descending so larger cells checked first
@@ -501,7 +505,11 @@ func (e *Engine) resolveCollisions() {
 		return active[i].Size > active[j].Size
 	})
 
-	toRemove := make(map[uint32]bool)
+	// Reuse toRemove map — clear it
+	toRemove := e.toRemove
+	for k := range toRemove {
+		delete(toRemove, k)
+	}
 
 	for _, a := range active {
 		if toRemove[a.ID] {
@@ -643,7 +651,15 @@ func (e *Engine) resolveCollisions() {
 	// Remove eaten cells
 	for id := range toRemove {
 		c := e.cells[id]
-		if c != nil && c.Owner != nil {
+		if c == nil {
+			continue
+		}
+		if c.Type == CellFood {
+			e.foodCount--
+		} else if c.Type == CellVirus {
+			e.virusCount--
+		}
+		if c.Owner != nil {
 			c.Owner.RemoveCell(id)
 		}
 		delete(e.cells, id)
@@ -728,6 +744,7 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 	child.VX = math.Cos(angle) * virusSplitV0
 	child.VY = math.Sin(angle) * virusSplitV0
 	e.cells[child.ID] = child
+	e.virusCount++
 
 	v.Size = e.Cfg.VirusSize
 	v.FeedCount = 0
@@ -735,13 +752,18 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 
 func (e *Engine) applyDecay() {
 	minSize := e.Cfg.StartSize
-	for _, c := range e.cells {
-		if c.Type == CellPlayer && c.Size > minSize {
-			c.Size *= e.Cfg.DecayRate
-			if c.Size < minSize {
-				c.Size = minSize
+	for _, p := range e.players {
+		if !p.Alive {
+			continue
+		}
+		for _, c := range p.Cells {
+			if c.Size > minSize {
+				c.Size *= e.Cfg.DecayRate
+				if c.Size < minSize {
+					c.Size = minSize
+				}
+				e.updated = append(e.updated, c)
 			}
-			e.updated = append(e.updated, c)
 		}
 	}
 }
