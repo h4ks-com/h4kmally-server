@@ -315,6 +315,76 @@ func (sh *ShopHandler) HandleOrders(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// HandleCancelOrder lets a user cancel their own pending order.
+// POST /api/shop/cancel?session=TOKEN  body: {"orderId":"..."}
+func (sh *ShopHandler) HandleCancelOrder(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	session := sh.authMgr.ValidateSession(r.URL.Query().Get("session"))
+	if session == nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+
+	var body struct {
+		OrderID string `json:"orderId"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.OrderID == "" {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"orderId is required"}`))
+		return
+	}
+
+	sh.mu.Lock()
+	defer sh.mu.Unlock()
+
+	var target *ShopOrder
+	for _, o := range sh.orders {
+		if o.ID == body.OrderID {
+			target = o
+			break
+		}
+	}
+
+	if target == nil {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error":"order not found"}`))
+		return
+	}
+
+	if target.UserSub != session.UserSub {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"error":"not your order"}`))
+		return
+	}
+
+	if target.Status != "pending" {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "only pending orders can be cancelled"})
+		return
+	}
+
+	target.Status = "cancelled"
+	sh.saveOrders()
+
+	log.Printf("[Shop] Order %s cancelled by user %s", target.ID, session.UserUsername)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":    true,
+		"order": target,
+	})
+}
+
 // pollTransactions runs in the background, checking for incoming payments.
 func (sh *ShopHandler) pollTransactions() {
 	// Initial delay

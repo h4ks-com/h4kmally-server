@@ -155,6 +155,7 @@ func main() {
 		mux.HandleFunc("/api/shop/daily-gift", shopHandler.HandleDailyGift)
 		mux.HandleFunc("/api/shop/purchase", shopHandler.HandlePurchase)
 		mux.HandleFunc("/api/shop/orders", shopHandler.HandleOrders)
+		mux.HandleFunc("/api/shop/cancel", shopHandler.HandleCancelOrder)
 	}
 
 	// CORS middleware for all routes
