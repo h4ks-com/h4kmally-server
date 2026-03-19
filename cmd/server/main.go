@@ -65,6 +65,8 @@ func main() {
 	cfg.VirusFeedSize = envFloat("VIRUS_FEED_SIZE", cfg.VirusFeedSize)
 	cfg.VirusSplit = envInt("VIRUS_SPLIT", cfg.VirusSplit)
 
+	cfg.MoveSpeed = envFloat("MOVE_SPEED", cfg.MoveSpeed)
+
 	botCount := envInt("BOT_COUNT", 0)
 
 	engine := game.NewEngine(cfg)

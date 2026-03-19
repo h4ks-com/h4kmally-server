@@ -183,9 +183,10 @@ func (p *Player) RemoveCell(id uint32) {
 }
 
 // SpeedForSize returns the movement speed for a given cell size.
+// OgarII canonical formula: 88 * size^(-0.4396754) per tick at 25Hz.
+// We factor it as 2.2 * size^(-0.4396754) * 40 (times MoveSpeed) in the engine.
 func SpeedForSize(size float64) float64 {
-	// Agar.io-style speed formula: smaller = faster
-	return 2.2 * math.Pow(size, -0.439)
+	return 2.2 * math.Pow(size, -0.4396754)
 }
 
 // Viewport represents a rectangular view area.
