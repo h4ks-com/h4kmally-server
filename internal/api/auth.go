@@ -14,10 +14,11 @@ import (
 
 // AuthSession represents a validated user session.
 type AuthSession struct {
-	UserSub   string
-	UserName  string
-	UserPic   string
-	ExpiresAt time.Time
+	UserSub      string
+	UserName     string
+	UserUsername string // Logto username (for payment systems)
+	UserPic      string
+	ExpiresAt    time.Time
 }
 
 // AuthManager handles Logto OAuth2 token validation and session management.
@@ -157,10 +158,11 @@ func (am *AuthManager) HandleAuthMe(w http.ResponseWriter, r *http.Request) {
 	sessionToken := generateSessionToken()
 	am.mu.Lock()
 	am.sessions[sessionToken] = &AuthSession{
-		UserSub:   userInfo.Sub,
-		UserName:  userInfo.Name,
-		UserPic:   userInfo.Picture,
-		ExpiresAt: time.Now().Add(24 * time.Hour),
+		UserSub:      userInfo.Sub,
+		UserName:     displayName,
+		UserUsername: userInfo.Username,
+		UserPic:      userInfo.Picture,
+		ExpiresAt:    time.Now().Add(24 * time.Hour),
 	}
 	am.mu.Unlock()
 

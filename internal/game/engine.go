@@ -384,14 +384,14 @@ func (e *Engine) processPlayerEject(p *Player) {
 
 // Ogar-style boost physics constants.
 const (
-	BoostDecay     = 0.89   // velocity multiplied by this each tick (matches Ogar)
+	BoostDecay     = 0.89             // velocity multiplied by this each tick (matches Ogar)
 	BoostDecayRate = 1.0 - BoostDecay // = 0.11
-	BoostMinSq     = 2.0   // stop boosting when velocity² < this (Ogar uses distanceSq < 2)
-	SplitBoostV0   = 80.0  // initial split speed (Ogar: ~78-82, nearly constant)
-	EjectBoostV0   = 100.0 // initial eject speed (Ogar: ejectSpeed = 100)
-	EjectMinMass   = 32.0  // minimum cell mass to eject (Ogar: playerMinMassEject = 32)
-	EjectSpawnPad  = 16.0  // extra offset from cell edge for spawn position (Ogar: +16)
-	EjectSpread    = 0.0524 // random angle spread in radians (±3°)
+	BoostMinSq     = 2.0              // stop boosting when velocity² < this (Ogar uses distanceSq < 2)
+	SplitBoostV0   = 80.0             // initial split speed (Ogar: ~78-82, nearly constant)
+	EjectBoostV0   = 100.0            // initial eject speed (Ogar: ejectSpeed = 100)
+	EjectMinMass   = 32.0             // minimum cell mass to eject (Ogar: playerMinMassEject = 32)
+	EjectSpawnPad  = 16.0             // extra offset from cell edge for spawn position (Ogar: +16)
+	EjectSpread    = 0.0524           // random angle spread in radians (±3°)
 )
 
 func (e *Engine) moveAllCells() {

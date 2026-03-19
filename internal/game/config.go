@@ -70,7 +70,7 @@ func DefaultConfig() Config {
 		VirusCount:    30,
 		VirusSize:     141.4,
 		VirusMaxSize:  288.4,
-		VirusFeedSize: 36.06,  // matches eject size; 7 feeds to split
+		VirusFeedSize: 36.06, // matches eject size; 7 feeds to split
 		VirusSplit:    10,
 
 		LeaderboardSize: 10,

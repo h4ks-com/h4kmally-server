@@ -69,6 +69,10 @@ type UserProfile struct {
 	SkinTokens    map[string]int    `json:"skinTokens,omitempty"`    // tokens per premium skin name
 	UnlockedSkins []string          `json:"unlockedSkins,omitempty"` // premium skins unlocked (5 tokens collected)
 	PendingTokens []SkinTokenReward `json:"pendingTokens,omitempty"` // tokens waiting to be revealed by user
+
+	// Daily gift tracking
+	LastDailyGift int64  `json:"lastDailyGift,omitempty"` // unix timestamp of last gift
+	DailyGiftCode string `json:"dailyGiftCode,omitempty"` // current gift link code
 }
 
 // IsBanned returns true if the user is currently banned.
@@ -435,6 +439,34 @@ func (us *UserStore) grantRandomTokensLocked(user *UserProfile, count int) {
 			}
 		}
 	}
+}
+
+// SetDailyGift updates the user's daily gift tracking.
+func (us *UserStore) SetDailyGift(sub, code string, timestamp int64) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	user.DailyGiftCode = code
+	user.LastDailyGift = timestamp
+	us.save()
+}
+
+// GrantTokens grants random premium skin tokens to a user (from shop purchase).
+func (us *UserStore) GrantTokens(sub string, count int) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.SkinTokens == nil {
+		user.SkinTokens = make(map[string]int)
+	}
+	us.grantRandomTokensLocked(user, count)
+	us.save()
 }
 
 // RevealTokens clears the pending token list for a user.

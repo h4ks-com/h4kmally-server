@@ -99,6 +99,22 @@ func main() {
 	// Wire up PremiumSkinNames so token granting can pick random premium skins
 	userStore.PremiumSkinNames = api.GetPremiumSkinNames
 
+	// Payment provider + Shop (optional — enabled when BEANS_API_TOKEN is set)
+	var shopHandler *api.ShopHandler
+	beansToken := os.Getenv("BEANS_API_TOKEN")
+	beansSite := os.Getenv("BEANS_SITE_URL")
+	beansMerchant := os.Getenv("BEANS_MERCHANT")
+	if beansToken != "" && beansMerchant != "" {
+		if beansSite == "" {
+			beansSite = "https://beans.h4ks.com"
+		}
+		payment := api.NewBeansProvider(beansSite, beansToken, beansMerchant)
+		shopHandler = api.NewShopHandler(authMgr, userStore, payment)
+		log.Printf("Shop enabled: payment=%s merchant=%s", payment.Name(), beansMerchant)
+	} else {
+		log.Println("Shop disabled (set BEANS_API_TOKEN and BEANS_MERCHANT to enable)")
+	}
+
 	// HTTP routes
 	mux := http.NewServeMux()
 
@@ -132,6 +148,14 @@ func main() {
 	mux.HandleFunc("/api/skins", api.HandleSkinsList)
 	mux.HandleFunc("/api/skins/access", server.HandleSkinsAccess)
 	mux.Handle("/skins/", http.StripPrefix("/skins/", http.FileServer(http.Dir("skins"))))
+
+	// Shop endpoints (only if payment provider is configured)
+	if shopHandler != nil {
+		mux.HandleFunc("/api/shop/items", shopHandler.HandleShopItems)
+		mux.HandleFunc("/api/shop/daily-gift", shopHandler.HandleDailyGift)
+		mux.HandleFunc("/api/shop/purchase", shopHandler.HandlePurchase)
+		mux.HandleFunc("/api/shop/orders", shopHandler.HandleOrders)
+	}
 
 	// CORS middleware for all routes
 	handler := corsMiddleware(mux)
