@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	_ "net/http/pprof"
 	"os"
 	"strconv"
 	"time"
@@ -155,6 +156,9 @@ func main() {
 	mux.HandleFunc("/api/effects/access", server.HandleEffectsAccess)
 	mux.HandleFunc("/api/top-users", server.HandleTopUsers)
 	mux.Handle("/skins/", http.StripPrefix("/skins/", http.FileServer(http.Dir("skins"))))
+
+	// pprof endpoints for CPU/memory profiling
+	mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 
 	// Shop endpoints (only if payment provider is configured)
 	if shopHandler != nil {
