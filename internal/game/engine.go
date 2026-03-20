@@ -308,11 +308,15 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	// Steps 4 (collision) and 6 (merge) may have added/removed cells since step 2.5,
 	// so we rebuild from the authoritative map.
 	e.snapshot = e.snapshot[:0]
-	for _, c := range e.cells {
+	// Also build a COPY of the cell map for broadcast to safely read without locks.
+	// (The live e.cells map can be modified by AddPlayer/RemovePlayer from WS handlers.)
+	cellMapCopy := make(map[uint32]*Cell, len(e.cells))
+	for id, c := range e.cells {
 		e.snapshot = append(e.snapshot, c)
+		cellMapCopy[id] = c
 	}
 
-	return e.updated, e.eaten, removed, e.snapshot, e.cells
+	return e.updated, e.eaten, removed, e.snapshot, cellMapCopy
 }
 
 // AllCells returns all cells in the game (for full-sync to new clients).
