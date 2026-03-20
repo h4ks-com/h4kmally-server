@@ -27,6 +27,7 @@ func ParseClientMessage(st *ShuffleTable, raw []byte) *ParsedMessage {
 type SpawnPayload struct {
 	Name          string `json:"name"`
 	Skin          string `json:"skin"`
+	Effect        string `json:"effect"`
 	ShowClanmates bool   `json:"showClanmates"`
 	Token         string `json:"token"`
 	Email         string `json:"email"`

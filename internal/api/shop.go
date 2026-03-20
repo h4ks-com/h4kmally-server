@@ -14,23 +14,30 @@ import (
 
 // ShopItem defines a purchasable item in the token shop.
 type ShopItem struct {
-	ID     string `json:"id"`
-	Name   string `json:"name"`
-	Price  int    `json:"price"`  // cost in beans
-	Tokens int    `json:"tokens"` // skin tokens awarded
+	ID           string `json:"id"`
+	Name         string `json:"name"`
+	Price        int    `json:"price"`                  // cost in beans
+	Tokens       int    `json:"tokens"`                 // tokens awarded (skin or effect or total for bundles)
+	Type         string `json:"type"`                   // "skin", "effect", or "bundle"
+	SkinTokens   int    `json:"skinTokens,omitempty"`   // for bundles: skin tokens
+	EffectTokens int    `json:"effectTokens,omitempty"` // for bundles: effect tokens
+	Section      string `json:"section"`                // "skin", "effect", or "bundle" — display grouping
 }
 
 // ShopOrder tracks a pending or completed purchase.
 type ShopOrder struct {
-	ID        string `json:"id"`
-	UserSub   string `json:"userSub"`
-	Username  string `json:"username"` // beans bank username (for tx matching)
-	ItemID    string `json:"itemId"`
-	Amount    int    `json:"amount"`          // beans to pay
-	Tokens    int    `json:"tokens"`          // tokens to award
-	Status    string `json:"status"`          // "pending", "completed", "expired"
-	CreatedAt int64  `json:"createdAt"`       // unix timestamp
-	MatchedTx int    `json:"matchedTx,omitempty"` // matched transaction ID
+	ID           string `json:"id"`
+	UserSub      string `json:"userSub"`
+	Username     string `json:"username"` // beans bank username (for tx matching)
+	ItemID       string `json:"itemId"`
+	Amount       int    `json:"amount"`                 // beans to pay
+	Tokens       int    `json:"tokens"`                 // total tokens to award
+	TokenType    string `json:"tokenType"`              // "skin", "effect", or "bundle"
+	SkinTokens   int    `json:"skinTokens,omitempty"`   // for bundles
+	EffectTokens int    `json:"effectTokens,omitempty"` // for bundles
+	Status       string `json:"status"`                 // "pending", "completed", "expired"
+	CreatedAt    int64  `json:"createdAt"`              // unix timestamp
+	MatchedTx    int    `json:"matchedTx,omitempty"`    // matched transaction ID
 }
 
 // DailyGiftState tracks a user's daily gift.
@@ -61,14 +68,23 @@ type ShopHandler struct {
 func NewShopHandler(authMgr *AuthManager, userStore *UserStore, payment PaymentProvider) *ShopHandler {
 	sh := &ShopHandler{
 		authMgr:      authMgr,
-		userStore:     userStore,
-		payment:       payment,
-		orders:        make([]*ShopOrder, 0),
-		processedTxs:  make(map[int]bool),
+		userStore:    userStore,
+		payment:      payment,
+		orders:       make([]*ShopOrder, 0),
+		processedTxs: make(map[int]bool),
 		items: []ShopItem{
-			{ID: "tokens-3", Name: "3 Skin Tokens", Price: 50, Tokens: 3},
-			{ID: "tokens-8", Name: "8 Skin Tokens", Price: 100, Tokens: 8},
-			{ID: "tokens-20", Name: "20 Skin Tokens", Price: 200, Tokens: 20},
+			// ── Skin Tokens (base: 1.0 token/bean) ──
+			{ID: "skin-5", Name: "5 Skin Tokens", Price: 5, Tokens: 5, Type: "skin", Section: "skin"},
+			{ID: "skin-15", Name: "15 Skin Tokens", Price: 12, Tokens: 15, Type: "skin", Section: "skin"},
+			{ID: "skin-35", Name: "35 Skin Tokens", Price: 25, Tokens: 35, Type: "skin", Section: "skin"},
+			// ── Effect Tokens (premium: ~0.6-0.8 token/bean) ──
+			{ID: "effect-3", Name: "3 Effect Tokens", Price: 5, Tokens: 3, Type: "effect", Section: "effect"},
+			{ID: "effect-8", Name: "8 Effect Tokens", Price: 12, Tokens: 8, Type: "effect", Section: "effect"},
+			{ID: "effect-20", Name: "20 Effect Tokens", Price: 25, Tokens: 20, Type: "effect", Section: "effect"},
+			// ── Bundles (best deal: 33-53% savings vs individual) ──
+			{ID: "bundle-starter", Name: "Starter Pack", Price: 8, Tokens: 13, Type: "bundle", SkinTokens: 8, EffectTokens: 5, Section: "bundle"},
+			{ID: "bundle-pro", Name: "Pro Pack", Price: 18, Tokens: 32, Type: "bundle", SkinTokens: 20, EffectTokens: 12, Section: "bundle"},
+			{ID: "bundle-ultimate", Name: "Ultimate Pack", Price: 30, Tokens: 70, Type: "bundle", SkinTokens: 45, EffectTokens: 25, Section: "bundle"},
 		},
 	}
 
@@ -154,8 +170,8 @@ func (sh *ShopHandler) HandleDailyGift(w http.ResponseWriter, r *http.Request) {
 	if user.LastDailyGift > 0 && now-user.LastDailyGift < 86400 {
 		// Already claimed today but code is gone — just return status
 		json.NewEncoder(w).Encode(map[string]interface{}{
-			"gift":      nil,
-			"available": false,
+			"gift":       nil,
+			"available":  false,
 			"nextGiftAt": user.LastDailyGift + 86400,
 		})
 		return
@@ -260,14 +276,17 @@ func (sh *ShopHandler) HandlePurchase(w http.ResponseWriter, r *http.Request) {
 
 	// Create new order
 	order := &ShopOrder{
-		ID:        generateOrderID(),
-		UserSub:   session.UserSub,
-		Username:  username,
-		ItemID:    item.ID,
-		Amount:    item.Price,
-		Tokens:    item.Tokens,
-		Status:    "pending",
-		CreatedAt: time.Now().Unix(),
+		ID:           generateOrderID(),
+		UserSub:      session.UserSub,
+		Username:     username,
+		ItemID:       item.ID,
+		Amount:       item.Price,
+		Tokens:       item.Tokens,
+		TokenType:    item.Type,
+		SkinTokens:   item.SkinTokens,
+		EffectTokens: item.EffectTokens,
+		Status:       "pending",
+		CreatedAt:    time.Now().Unix(),
 	}
 	sh.orders = append(sh.orders, order)
 	sh.saveOrders()
@@ -433,11 +452,19 @@ func (sh *ShopHandler) checkTransactions() {
 			order.MatchedTx = tx.ID
 			sh.processedTxs[tx.ID] = true
 
-			// Grant tokens to the user
-			sh.userStore.GrantTokens(order.UserSub, order.Tokens)
+			// Grant tokens to the user based on type
+			switch order.TokenType {
+			case "effect":
+				sh.userStore.GrantEffectTokens(order.UserSub, order.Tokens)
+			case "bundle":
+				sh.userStore.GrantTokens(order.UserSub, order.SkinTokens)
+				sh.userStore.GrantEffectTokens(order.UserSub, order.EffectTokens)
+			default:
+				sh.userStore.GrantTokens(order.UserSub, order.Tokens)
+			}
 
-			log.Printf("[Shop] Order %s fulfilled: user=%s tokens=%d txID=%d",
-				order.ID, order.Username, order.Tokens, tx.ID)
+			log.Printf("[Shop] Order %s fulfilled: user=%s type=%s tokens=%d txID=%d",
+				order.ID, order.Username, order.TokenType, order.Tokens, tx.ID)
 
 			sh.saveOrders()
 			break // one tx per order

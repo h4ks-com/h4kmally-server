@@ -6,39 +6,43 @@ import (
 	"math/rand/v2"
 )
 
-// SIG 0.0.1 Protocol Constants
-const ProtocolVersion = "SIG 0.0.1"
+// SIG 0.0.2 Protocol Constants
+const ProtocolVersion = "SIG 0.0.2"
 
 // Client to Server opcodes (logical)
 const (
-	OpSpawn        = 0
-	OpMouse        = 16
-	OpSplit        = 17
-	OpEject        = 21
-	OpChat         = 99
-	OpBoostCheck   = 190
-	OpStatUpdate   = 191
-	OpFoodEaten    = 192
-	OpSpectate     = 205
-	OpAdblocker    = 208
-	OpCaptchaToken = 220
-	OpPing         = 254
+	OpSpawn          = 0
+	OpMouse          = 16
+	OpSplit          = 17
+	OpEject          = 21
+	OpMultiboxToggle = 22 // toggle multibox on/off (1 byte opcode only)
+	OpMultiboxSwitch = 23 // switch active slot (1 byte opcode only)
+	OpChat           = 99
+	OpBoostCheck     = 190
+	OpStatUpdate     = 191
+	OpFoodEaten      = 192
+	OpSpectate       = 205
+	OpAdblocker      = 208
+	OpCaptchaToken   = 220
+	OpPing           = 254
 )
 
 // Server to Client opcodes (logical)
 const (
-	OpWorldUpdate  = 16
-	OpCamera       = 17
-	OpClearAll     = 18
-	OpClearMine    = 20
-	OpAddMyCell    = 32
-	OpLeaderboardT = 48
-	OpLeaderboardF = 49
-	OpBorder       = 64
-	OpChatRecv     = 99
-	OpPasswordErr  = 180
-	OpSpawnResult  = 221
-	OpPingReply    = 254
+	OpWorldUpdate   = 16
+	OpCamera        = 17
+	OpClearAll      = 18
+	OpClearMine     = 20
+	OpMultiboxState = 22 // multibox state notification
+	OpAddMyCell     = 32
+	OpAddMultiCell  = 33 // like AddMyCell but for multi player cells
+	OpLeaderboardT  = 48
+	OpLeaderboardF  = 49
+	OpBorder        = 64
+	OpChatRecv      = 99
+	OpPasswordErr   = 180
+	OpSpawnResult   = 221
+	OpPingReply     = 254
 )
 
 // ShuffleTable is a 256-byte opcode permutation table.
@@ -120,6 +124,14 @@ func BuildAddMyCell(st *ShuffleTable, cellID uint32) []byte {
 	return buf
 }
 
+// BuildAddMultiCell builds an ADD_MULTI_CELL message.
+func BuildAddMultiCell(st *ShuffleTable, cellID uint32) []byte {
+	buf := make([]byte, 5)
+	buf[0] = st.Encode(OpAddMultiCell)
+	binary.LittleEndian.PutUint32(buf[1:], cellID)
+	return buf
+}
+
 // BuildClearMine builds a CLEAR_MINE message.
 func BuildClearMine(st *ShuffleTable) []byte {
 	return []byte{st.Encode(OpClearMine)}
@@ -152,6 +164,21 @@ func BuildCamera(st *ShuffleTable, x, y float32) []byte {
 	binary.LittleEndian.PutUint32(buf[1:], math.Float32bits(x))
 	binary.LittleEndian.PutUint32(buf[5:], math.Float32bits(y))
 	binary.LittleEndian.PutUint32(buf[9:], 0)
+	return buf
+}
+
+// BuildMultiboxState builds a MULTIBOX_STATE message.
+// enabled=1/0, activeSlot=0/1, multiAlive=1/0
+func BuildMultiboxState(st *ShuffleTable, enabled bool, activeSlot byte, multiAlive bool) []byte {
+	buf := make([]byte, 4)
+	buf[0] = st.Encode(OpMultiboxState)
+	if enabled {
+		buf[1] = 1
+	}
+	buf[2] = activeSlot
+	if multiAlive {
+		buf[3] = 1
+	}
 	return buf
 }
 

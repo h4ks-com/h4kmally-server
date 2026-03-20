@@ -30,7 +30,7 @@ type Bot struct {
 // NewBot creates a new bot with a random name.
 func NewBot() *Bot {
 	name := botNames[rand.IntN(len(botNames))]
-	p := NewPlayer(name, "")
+	p := NewPlayer(name, "", "")
 	p.IsSubscriber = false
 	return &Bot{
 		Player: p,

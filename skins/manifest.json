@@ -4,5 +4,23 @@
     "file": "dx.jpeg",
     "category": "premium",
     "rarity": "common"
+  },
+  {
+    "name": "g",
+    "file": "g.png",
+    "category": "free",
+    "rarity": "common"
+  },
+  {
+    "name": "c",
+    "file": "c.png",
+    "category": "free",
+    "rarity": "common"
+  },
+  {
+    "name": "63",
+    "file": "63.gif",
+    "category": "free",
+    "rarity": "common"
   }
 ]

@@ -13,6 +13,9 @@ import (
 // TokensPerSkinUnlock is how many tokens are needed to unlock a premium skin.
 const TokensPerSkinUnlock = 5
 
+// TokensPerEffectUnlock is how many tokens are needed to unlock a premium effect.
+const TokensPerEffectUnlock = 5
+
 // xpPerLevel is the base XP cost per level increment (cumulative quadratic).
 // Total XP for level N = 50000 * N*(N-1)/2
 // Level 2 = 50,000 total XP   (~1 hour of play)
@@ -53,6 +56,11 @@ type SkinTokenReward struct {
 	SkinName string `json:"skinName"`
 }
 
+// EffectTokenReward represents a pending effect token that the user hasn't revealed yet.
+type EffectTokenReward struct {
+	EffectName string `json:"effectName"`
+}
+
 // UserProfile stores persistent game stats for an authenticated user.
 type UserProfile struct {
 	Sub         string `json:"sub"`
@@ -69,6 +77,11 @@ type UserProfile struct {
 	SkinTokens    map[string]int    `json:"skinTokens,omitempty"`    // tokens per premium skin name
 	UnlockedSkins []string          `json:"unlockedSkins,omitempty"` // premium skins unlocked (5 tokens collected)
 	PendingTokens []SkinTokenReward `json:"pendingTokens,omitempty"` // tokens waiting to be revealed by user
+
+	// Effect system
+	EffectTokens        map[string]int      `json:"effectTokens,omitempty"`        // tokens per premium effect name
+	UnlockedEffects     []string            `json:"unlockedEffects,omitempty"`     // premium effects unlocked (5 tokens collected)
+	PendingEffectTokens []EffectTokenReward `json:"pendingEffectTokens,omitempty"` // effect tokens waiting to be revealed
 
 	// Daily gift tracking
 	LastDailyGift int64  `json:"lastDailyGift,omitempty"` // unix timestamp of last gift
@@ -119,15 +132,20 @@ type UserStore struct {
 	// PremiumSkinNames returns the list of skin names in the "premium" category.
 	// Set by main after server init so token granting can pick random skins.
 	PremiumSkinNames func() []string
+
+	// PremiumEffectNames returns the list of premium effect IDs.
+	// Set by main after server init so token granting can pick random effects.
+	PremiumEffectNames func() []string
 }
 
 // NewUserStore creates a user store backed by the given file path.
 func NewUserStore(path string, superAdminUsername string) *UserStore {
 	us := &UserStore{
-		users:            make(map[string]*UserProfile),
-		path:             path,
-		superSub:         superAdminUsername,
-		PremiumSkinNames: func() []string { return nil },
+		users:              make(map[string]*UserProfile),
+		path:               path,
+		superSub:           superAdminUsername,
+		PremiumSkinNames:   func() []string { return nil },
+		PremiumEffectNames: func() []string { return nil },
 	}
 	us.load()
 	return us
@@ -175,15 +193,18 @@ func (us *UserStore) GetOrCreate(sub, name, picture string) *UserProfile {
 	user, exists := us.users[sub]
 	if !exists {
 		user = &UserProfile{
-			Sub:        sub,
-			Name:       name,
-			Picture:    picture,
-			SkinTokens: make(map[string]int),
+			Sub:          sub,
+			Name:         name,
+			Picture:      picture,
+			SkinTokens:   make(map[string]int),
+			EffectTokens: make(map[string]int),
 		}
 		us.users[sub] = user
 
 		// Grant 5 random premium skin tokens for new accounts
 		us.grantRandomTokensLocked(user, 5)
+		// Grant 5 random premium effect tokens for new accounts
+		us.grantRandomEffectTokensLocked(user, 5)
 	} else {
 		// Update name/picture from latest Logto info
 		if name != "" {
@@ -195,6 +216,10 @@ func (us *UserStore) GetOrCreate(sub, name, picture string) *UserProfile {
 		// Ensure SkinTokens map exists for legacy accounts
 		if user.SkinTokens == nil {
 			user.SkinTokens = make(map[string]int)
+		}
+		// Ensure EffectTokens map exists for legacy accounts
+		if user.EffectTokens == nil {
+			user.EffectTokens = make(map[string]int)
 		}
 	}
 
@@ -280,6 +305,10 @@ func (us *UserStore) UpdatePoints(sub string, delta int64, currentScore int64) {
 			user.SkinTokens = make(map[string]int)
 		}
 		us.grantRandomTokensLocked(user, levelsGained*3)
+		if user.EffectTokens == nil {
+			user.EffectTokens = make(map[string]int)
+		}
+		us.grantRandomEffectTokensLocked(user, levelsGained*3)
 	}
 }
 
@@ -492,7 +521,78 @@ func (us *UserStore) HasSkinUnlocked(sub, skinName string) bool {
 	return skinInSlice(user.UnlockedSkins, skinName)
 }
 
+// grantRandomEffectTokensLocked picks random premium effects and adds tokens + pending reveals.
+// Must be called with us.mu held.
+func (us *UserStore) grantRandomEffectTokensLocked(user *UserProfile, count int) {
+	premiumEffects := us.PremiumEffectNames()
+	if len(premiumEffects) == 0 {
+		return
+	}
+	if user.EffectTokens == nil {
+		user.EffectTokens = make(map[string]int)
+	}
+	for i := 0; i < count; i++ {
+		effectName := premiumEffects[rand.Intn(len(premiumEffects))]
+		user.EffectTokens[effectName]++
+		user.PendingEffectTokens = append(user.PendingEffectTokens, EffectTokenReward{EffectName: effectName})
+
+		// Auto-unlock when reaching the threshold
+		if user.EffectTokens[effectName] >= TokensPerEffectUnlock {
+			if !stringInSlice(user.UnlockedEffects, effectName) {
+				user.UnlockedEffects = append(user.UnlockedEffects, effectName)
+			}
+		}
+	}
+}
+
+// GrantEffectTokens grants random premium effect tokens to a user (from shop purchase).
+func (us *UserStore) GrantEffectTokens(sub string, count int) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.EffectTokens == nil {
+		user.EffectTokens = make(map[string]int)
+	}
+	us.grantRandomEffectTokensLocked(user, count)
+	us.save()
+}
+
+// RevealEffectTokens clears the pending effect token list for a user.
+func (us *UserStore) RevealEffectTokens(sub string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	user.PendingEffectTokens = nil
+	us.save()
+}
+
+// HasEffectUnlocked checks if a user has unlocked a specific premium effect.
+func (us *UserStore) HasEffectUnlocked(sub, effectName string) bool {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	return stringInSlice(user.UnlockedEffects, effectName)
+}
+
 func skinInSlice(slice []string, s string) bool {
+	for _, v := range slice {
+		if v == s {
+			return true
+		}
+	}
+	return false
+}
+
+func stringInSlice(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {
 			return true

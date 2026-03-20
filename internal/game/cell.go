@@ -44,6 +44,7 @@ type Cell struct {
 	R, G, B uint8
 	Name    string
 	Skin    string
+	Effect  string
 	Clan    string
 
 	// Flags
@@ -163,6 +164,7 @@ func NewPlayerCell(owner *Player, x, y, size float64) *Cell {
 		B:            owner.Color[2],
 		Name:         owner.Name,
 		Skin:         owner.Skin,
+		Effect:       owner.Effect,
 		IsPlayer:     true,
 		IsSubscriber: owner.IsSubscriber,
 		Owner:        owner,

@@ -47,6 +47,9 @@ func (w *WorldUpdateBuilder) AddCell(c *game.Cell) {
 	if c.Name != "" {
 		flags |= 0x08
 	}
+	if c.Effect != "" {
+		flags |= 0x10
+	}
 
 	w.buf = append(w.buf, flags)
 
@@ -68,6 +71,10 @@ func (w *WorldUpdateBuilder) AddCell(c *game.Cell) {
 	// Name (if non-empty)
 	if flags&0x08 != 0 {
 		w.buf = append(w.buf, EncodeStringUTF8(c.Name)...)
+	}
+	// Effect (if non-empty)
+	if flags&0x10 != 0 {
+		w.buf = append(w.buf, EncodeStringUTF8(c.Effect)...)
 	}
 }
 

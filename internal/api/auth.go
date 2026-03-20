@@ -235,6 +235,30 @@ func (am *AuthManager) HandleTokenReveal(w http.ResponseWriter, r *http.Request)
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }
 
+// HandleEffectTokenReveal clears the user's pending effect token list.
+// POST /api/auth/effect-tokens/reveal?session=TOKEN
+func (am *AuthManager) HandleEffectTokenReveal(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+	sessionToken := r.URL.Query().Get("session")
+	session := am.ValidateSession(sessionToken)
+	if session == nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"invalid or expired session"}`))
+		return
+	}
+	am.UserStore.RevealEffectTokens(session.UserSub)
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
 // ValidateSession checks if a session token is valid and not expired.
 func (am *AuthManager) ValidateSession(token string) *AuthSession {
 	if token == "" {

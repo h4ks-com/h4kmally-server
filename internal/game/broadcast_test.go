@@ -21,7 +21,7 @@ func TestBroadcastScenario_PlayerMovesIntoFoodArea(t *testing.T) {
 	e.cells[100] = food
 
 	// Create player at (0, 0)
-	p := NewPlayer("mover", "")
+	p := NewPlayer("mover", "", "")
 	p.Alive = true
 	playerCell := &Cell{ID: 200, Type: CellPlayer, X: 0, Y: 0, Size: 32, Owner: p, IsPlayer: true}
 	p.Cells = []*Cell{playerCell}
@@ -107,7 +107,7 @@ func TestBroadcastScenario_FoodLeavesViewport(t *testing.T) {
 	e.cells[100] = food
 
 	// Player starts at (0, 0) — food is in viewport
-	p := NewPlayer("mover", "")
+	p := NewPlayer("mover", "", "")
 	p.Alive = true
 	playerCell := &Cell{ID: 200, Type: CellPlayer, X: 0, Y: 0, Size: 32, Owner: p}
 	p.Cells = []*Cell{playerCell}
@@ -176,7 +176,7 @@ func TestBroadcastScenario_StaticFoodDiscovery(t *testing.T) {
 	}
 
 	// Player at origin with size 32
-	p := NewPlayer("test", "")
+	p := NewPlayer("test", "", "")
 	p.Alive = true
 	pc := &Cell{ID: 999, Type: CellPlayer, X: 0, Y: 0, Size: 32, Owner: p}
 	p.Cells = []*Cell{pc}

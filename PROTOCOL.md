@@ -1,6 +1,6 @@
-# SIG 0.0.1 Protocol Specification
+# SIG 0.0.2 Protocol Specification
 
-The SIG 0.0.1 protocol is a binary WebSocket protocol used for communication between the h4kmally game client and server. All messages are sent as binary WebSocket frames. Multi-byte integers are **little-endian**.
+The SIG 0.0.2 protocol is a binary WebSocket protocol used for communication between the h4kmally game client and server. All messages are sent as binary WebSocket frames. Multi-byte integers are **little-endian**.
 
 ## Table of Contents
 
@@ -10,6 +10,8 @@ The SIG 0.0.1 protocol is a binary WebSocket protocol used for communication bet
 - [Client → Server Messages](#client--server-messages)
 - [Server → Client Messages](#server--client-messages)
 - [World Update Format](#world-update-format)
+- [Border Effects (Visual)](#border-effects-visual)
+- [Multibox System](#multibox-system)
 - [Typical Message Flow](#typical-message-flow)
 
 ---
@@ -21,18 +23,18 @@ The SIG 0.0.1 protocol is a binary WebSocket protocol used for communication bet
 The client sends a UTF-8 null-terminated string:
 
 ```
-"SIG 0.0.1\0"
+"SIG 0.0.2\0"
 ```
 
 ### Step 2: Server responds with version + shuffle table
 
 ```
 Offset  Size     Description
-0       var      "SIG 0.0.1\0" — null-terminated UTF-8 string (10 bytes)
-10      256      Shuffle table — a byte permutation (0–255 shuffled)
+0       var      "SIG 0.0.2\0" — null-terminated UTF-8 string (11 bytes)
+11      256      Shuffle table — a byte permutation (0–255 shuffled)
 ```
 
-Total: **266 bytes**
+Total: **267 bytes**
 
 The shuffle table is a random permutation of bytes 0–255. It is used to obfuscate opcodes on the wire (see [Opcode Shuffling](#opcode-shuffling)).
 
@@ -46,7 +48,7 @@ Immediately after the handshake, the server sends a `BORDER` message defining th
 
 All opcodes are shuffled through a per-connection permutation table to prevent trivial packet sniffing.
 
-- **Client → Server**: The client receives the shuffle table `T[256]` and uses the **inverse** mapping. When sending logical opcode `op`, the wire byte is `T.inverse[op]`. The server decodes with `T.forward[wire_byte]` → but in practice, the server stores inverse = undo of forward, so: `T.inverse[wire_byte]` gives back the logical opcode.
+- **Client → Server**: The client receives the shuffle table `T[256]` and uses the **inverse** mapping. When sending logical opcode `op`, the wire byte is `T.inverse[op]`.
 - **Server → Client**: The server uses `T.forward[logical_op]` to get the wire byte.
 
 In code:
@@ -54,7 +56,7 @@ In code:
 // Server encoding (server → client)
 wire_byte = shuffle.Forward[logical_opcode]
 
-// Server decoding (client → server)  
+// Server decoding (client → server)
 logical_opcode = shuffle.Inverse[wire_byte]
 ```
 
@@ -95,11 +97,14 @@ JSON payload:
 {
   "name": "PlayerName",
   "skin": "skin_id",
+  "effect": "neon",
   "showClanmates": false,
   "token": "auth_token",
   "email": "user@example.com"
 }
 ```
+
+The `effect` field selects a border effect rendered around the player's cells. See [Border Effects](#border-effects-visual) for the full list.
 
 ### MOUSE (opcode 16)
 
@@ -140,6 +145,28 @@ Total: **1 byte**
 
 This shoots a small blob of mass (size 38, ~14.44 mass) from each cell toward the current mouse position. The cell must be at least size 60 to eject.
 
+### MULTIBOX_TOGGLE (opcode 22)
+
+Toggles multibox mode on/off. When enabled, the server creates a second player entity on the same connection. See [Multibox System](#multibox-system).
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 22)
+```
+
+Total: **1 byte**
+
+### MULTIBOX_SWITCH (opcode 23)
+
+Switches which multibox slot is actively receiving input (mouse, split, eject). Triggered by the Tab key.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 23)
+```
+
+Total: **1 byte**
+
 ### CHAT (opcode 99)
 
 Sends a chat message.
@@ -149,6 +176,41 @@ Offset  Type    Field
 0       u8      opcode (shuffled 99)
 1       u8      flags (0 = normal)
 2       string  message text (null-terminated)
+```
+
+### SPECTATOR_CMD (opcode 190)
+
+Spectator sub-commands.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 190)
+1       u8      command
+```
+
+Total: **2 bytes**
+
+| Command | Action | Description |
+|---------|--------|-------------|
+| `0x01`  | Toggle follow | Auto-follow the top player vs free-roam |
+| `0x02`  | Toggle god mode | Admin-only: see entire map (no viewport culling) |
+
+### STAT_UPDATE (opcode 191)
+
+Keepalive acknowledgment from client.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 191)
+```
+
+### SPECTATE (opcode 205)
+
+Request to enter spectator mode.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 205)
 ```
 
 ### CAPTCHA_TOKEN (opcode 220)
@@ -171,24 +233,6 @@ Offset  Type    Field
 ```
 
 Total: **1 byte**
-
-### STAT_UPDATE (opcode 191)
-
-Keepalive acknowledgment from client.
-
-```
-Offset  Type    Field
-0       u8      opcode (shuffled 191)
-```
-
-### SPECTATE (opcode 205)
-
-Request to enter spectator mode.
-
-```
-Offset  Type    Field
-0       u8      opcode (shuffled 205)
-```
 
 ---
 
@@ -234,9 +278,23 @@ Offset  Type    Field
 
 Total: **1 byte**
 
+### MULTIBOX_STATE (opcode 22)
+
+Notifies the client of multibox state changes.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 22)
+1       u8      enabled (1 = multibox active, 0 = off)
+2       u8      activeSlot (0 = primary, 1 = secondary)
+3       u8      multiAlive (1 = secondary player is alive)
+```
+
+Total: **4 bytes**
+
 ### ADD_MY_CELL (opcode 32)
 
-Notifies the client that a cell belongs to them.
+Notifies the client that a cell belongs to the primary player.
 
 ```
 Offset  Type    Field
@@ -246,7 +304,17 @@ Offset  Type    Field
 
 Total: **5 bytes**
 
-Sent after spawning and after splitting to inform the client which cells are "mine" (rendered differently, shown on minimap, etc.).
+### ADD_MULTI_CELL (opcode 33)
+
+Notifies the client that a cell belongs to the secondary multibox player.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 33)
+1       u32     cellId — the cell ID to claim
+```
+
+Total: **5 bytes**
 
 ### LEADERBOARD_FFA (opcode 49)
 
@@ -317,8 +385,6 @@ Offset  Type    Field
 
 Total: **1 byte**
 
-Client measures round-trip time between sending PING and receiving PING_REPLY.
-
 ---
 
 ## World Update Format
@@ -347,6 +413,7 @@ Section 3: Cell Updates (repeated until sentinel)
                       0x02 = has color data
                       0x04 = has skin data
                       0x08 = has name data
+                      0x10 = has effect data
     +11     u8      isVirus (0 or 1)
     +12     u8      isPlayer (0 or 1)
     +13     u8      isSubscriber (0 or 1)
@@ -363,6 +430,9 @@ Section 3: Cell Updates (repeated until sentinel)
     If flags & 0x08 (name):
       +var    string  display name (null-terminated)
 
+    If flags & 0x10 (effect):
+      +var    string  effect ID (null-terminated, e.g. "neon", "blackhole")
+
   End sentinel:
     +0      u32     0x00000000  (cellId = 0 marks end of cell updates)
 
@@ -376,13 +446,14 @@ Section 4: Removals
 
 The flags byte controls which optional fields are present:
 
-| Bit  | Value | Field       | When set                                |
-|------|-------|-------------|-----------------------------------------|
-| 1    | 0x02  | Color       | 3 bytes (R, G, B) follow after clan     |
-| 2    | 0x04  | Skin        | Null-terminated skin string follows      |
-| 3    | 0x08  | Name        | Null-terminated name string follows      |
+| Bit  | Value | Field       | When set                                    |
+|------|-------|-------------|---------------------------------------------|
+| 1    | 0x02  | Color       | 3 bytes (R, G, B) follow after clan         |
+| 2    | 0x04  | Skin        | Null-terminated skin string follows          |
+| 3    | 0x08  | Name        | Null-terminated name string follows          |
+| 4    | 0x10  | Effect      | Null-terminated effect ID string follows     |
 
-Flags are only set when the data has changed (dirty). On first appearance, all flags are typically set. On subsequent updates (position/size changes), flags may be 0 if color/skin/name haven't changed.
+Flags are only set when the data has changed (dirty). On first appearance, all flags are typically set. On subsequent updates (position/size changes), flags may be 0 if color/skin/name/effect haven't changed.
 
 ### Cell Types in Updates
 
@@ -394,20 +465,73 @@ Flags are only set when the data has changed (dirty). On first appearance, all f
 
 ---
 
+## Border Effects (Visual)
+
+Players can select a visual effect rendered around their cells. The effect ID is sent in the SPAWN payload and broadcast to other clients via the `0x10` flag in world updates. Effects are cosmetic only — they have no gameplay impact (except the black hole's visual distortion of nearby entities on other clients' renderers).
+
+### Free Effects
+
+| ID | Label | Description |
+|----|-------|-------------|
+| `neon` | Neon Pulse | Pulsing neon glow matching cell color |
+| `prismatic` | Prismatic | Shifting rainbow border with hue rotation |
+| `starfield` | Starfield | Orbiting star particles around the cell |
+| `lightning` | Lightning | Crackling electric arcs between random points |
+
+### Premium Effects (require effect tokens)
+
+| ID | Label | Description |
+|----|-------|-------------|
+| `sakura` | Sakura | Cherry blossom petals drifting with wind, leaving trails |
+| `frost` | Frost | Ice crystal ring with frosty mist and snowflake particles |
+| `shadow_aura` | Shadow Aura | Dark smoke tendrils radiating outward with pulsing core |
+| `flame` | Flame | Rising fire particles with ember trails |
+| `glitch` | Glitch | Digital distortion — RGB shift, scan lines, data corruption |
+| `blackhole` | Black Hole | Gravitational warping of nearby game objects |
+
+### Black Hole Gravitational Warping
+
+The Black Hole effect is unique in that it distorts the rendering of other game objects on the client. The renderer:
+
+1. Collects all black hole cells each frame
+2. Warps the map grid lines toward black hole centers using inverse-distance pull with a smoothstep fade at the edge
+3. Warps the positions of nearby food, viruses, and other player cells toward the black hole
+4. Applies **spaghettification** — objects near a black hole are stretched radially and compressed tangentially (smaller objects like food are affected more strongly)
+5. Warps border lines that pass through the gravitational field
+
+The warp radius extends to `size × 2.5` around each black hole cell. The pull strength uses a smoothstep falloff to prevent visual discontinuity at the warp boundary edge.
+
+---
+
+## Multibox System
+
+Multibox allows a single connection to control two independent player entities. This is toggled via `MULTIBOX_TOGGLE` (opcode 22).
+
+### Behaviour
+
+- Each connection can have at most one primary and one secondary player
+- `MULTIBOX_SWITCH` (opcode 23) toggles which slot receives mouse/split/eject input
+- The server sends `MULTIBOX_STATE` (opcode 22) to inform the client of the current state
+- Primary cells are signaled via `ADD_MY_CELL` (opcode 32), secondary via `ADD_MULTI_CELL` (opcode 33)
+- Both players auto-respawn after death while multibox is enabled
+- The client renders the inactive slot's cells with reduced opacity and an active-slot ring indicator
+
+---
+
 ## Typical Message Flow
 
 ```
 Client                              Server
   |                                    |
-  |--- "SIG 0.0.1\0" --------------->|  (1) Protocol version
+  |--- "SIG 0.0.2\0" --------------->|  (1) Protocol version
   |                                    |
-  |<-- version + shuffle table -------|  (2) Handshake response (266 bytes)
+  |<-- version + shuffle table -------|  (2) Handshake response (267 bytes)
   |                                    |
   |<-- BORDER (34 bytes) -------------|  (3) Map boundaries
   |                                    |
-  |--- CAPTCHA_TOKEN (JSON) --------->|  (4) Auth (accepted by default)
+  |--- CAPTCHA_TOKEN (JSON) --------->|  (4) Auth
   |                                    |
-  |--- SPAWN (JSON) ----------------->|  (5) Request spawn
+  |--- SPAWN (JSON + effect) -------->|  (5) Request spawn
   |                                    |
   |<-- SPAWN_RESULT (accepted) -------|  (6) Spawn confirmed
   |<-- ADD_MY_CELL (cellId) ----------|  (7) "This cell is yours"
@@ -420,19 +544,28 @@ Client                              Server
   |<-- LEADERBOARD @ 0.5Hz ----------|  (12) Periodic leaderboard
   |                                    |
   |--- SPLIT ------------------------>|  (13) Space key
-  |<-- ADD_MY_CELL (new cells) -------|  
+  |<-- ADD_MY_CELL (new cells) -------|
   |                                    |
   |--- EJECT ------------------------>|  (14) W key
   |                                    |
-  |--- CHAT (text) ------------------>|  (15) Chat message
+  |--- MULTIBOX_TOGGLE -------------->|  (15) Enable multibox
+  |<-- MULTIBOX_STATE (on) ----------|
+  |<-- ADD_MULTI_CELL (cellId) -------|  (16) Secondary cell spawned
+  |                                    |
+  |--- MULTIBOX_SWITCH -------------->|  (17) Tab — switch control
+  |<-- MULTIBOX_STATE (slot=1) -------|
+  |                                    |
+  |--- CHAT (text) ------------------>|  (18) Chat message
   |<-- CHAT_RECV (broadcast) ---------|
   |                                    |
-  |--- PING ------------------------->|  (16) Latency check
+  |--- SPECTATOR_CMD (follow) ------->|  (19) Toggle spectator follow
+  |                                    |
+  |--- PING ------------------------->|  (20) Latency check
   |<-- PING_REPLY --------------------|
   |                                    |
-  |<-- CLEAR_MINE -------------------|  (17) Player died
+  |<-- CLEAR_MINE -------------------|  (21) Player died
   |                                    |
-  |--- SPAWN (respawn) -------------->|  (18) Respawn
+  |--- SPAWN (respawn) -------------->|  (22) Respawn
   ...
 ```
 
@@ -472,7 +605,7 @@ function readString(view, offset) {
 ### Shuffle Table Usage (Client)
 
 ```javascript
-// After receiving handshake, extract shuffle table (bytes 10–265)
+// After receiving handshake, extract shuffle table (bytes 11–266)
 const forward = new Uint8Array(handshake, versionLength, 256);
 
 // Build inverse table

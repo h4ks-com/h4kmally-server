@@ -124,6 +124,41 @@ func (e *Engine) SpawnPlayer(p *Player) {
 	p.SpawnProt = 75 // ~3 seconds of spawn protection at 25Hz
 }
 
+// SpawnPlayerNear spawns a player near a given position with a random offset.
+func (e *Engine) SpawnPlayerNear(p *Player, nearX, nearY, offset float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	angle := rand.Float64() * 2 * math.Pi
+	x := nearX + math.Cos(angle)*offset
+	y := nearY + math.Sin(angle)*offset
+
+	// Clamp to map bounds
+	w := e.Cfg.MapWidth * 0.95
+	h := e.Cfg.MapHeight * 0.95
+	if x < -w {
+		x = -w
+	}
+	if x > w {
+		x = w
+	}
+	if y < -h {
+		y = -h
+	}
+	if y > h {
+		y = h
+	}
+
+	cell := NewPlayerCell(p, x, y, e.Cfg.StartSize)
+	cell.MergeAt = 0
+	e.cells[cell.ID] = cell
+
+	p.Cells = append(p.Cells[:0], cell)
+	p.Alive = true
+	p.Score = cell.Mass()
+	p.SpawnProt = 75
+}
+
 func (e *Engine) findSpawnPos() (float64, float64) {
 	w := e.Cfg.MapWidth * 0.8
 	h := e.Cfg.MapHeight * 0.8

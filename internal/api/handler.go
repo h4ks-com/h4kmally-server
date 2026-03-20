@@ -61,6 +61,15 @@ type Client struct {
 	// When a cell leaves the viewport, we send a removal so the client drops it.
 	knownCells   map[uint32]bool
 	knownMyCells map[uint32]bool // cell IDs for which we've sent AddMyCell
+
+	// Multibox: second player slot
+	multiEnabled    bool            // multibox feature active
+	multiPlayer     *game.Player    // the second cell group (nil if not enabled)
+	multiAlive      bool            // is the multi player alive
+	multiSlot       byte            // 0 = controlling primary, 1 = controlling multi
+	knownMultiCells map[uint32]bool // cell IDs for which we've sent AddMultiCell
+	multiRespawn    int64           // unix time to auto-respawn multi (0 = not pending)
+	primaryRespawn  int64           // unix time to auto-respawn primary (0 = not pending)
 }
 
 // Server manages all connected clients and the game engine.
@@ -175,6 +184,16 @@ func (c *Client) handleConnection() {
 			c.engine.RemovePlayer(c.player.ID)
 			log.Printf("Player %q (ID %d) disconnected", c.player.Name, c.player.ID)
 		}
+		// Clean up multibox player
+		c.mu.Lock()
+		mp := c.multiPlayer
+		c.multiPlayer = nil
+		c.multiEnabled = false
+		c.mu.Unlock()
+		if mp != nil {
+			c.engine.RemovePlayer(mp.ID)
+		}
+
 		close(c.send)
 		c.conn.Close()
 	}()
@@ -253,6 +272,7 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 
 		// Validate skin access server-side
 		validatedSkin := c.validateSkinAccess(sp.Skin)
+		validatedEffect := c.validateEffect(sp.Effect)
 
 		// Spawn-time dedup: if another client with the same account has an
 		// active player, remove it so we don't end up with ghost duplicates.
@@ -274,16 +294,27 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 
 		// Create or respawn
 		if c.player == nil {
-			c.player = game.NewPlayer(sp.Name, validatedSkin)
+			c.player = game.NewPlayer(sp.Name, validatedSkin, validatedEffect)
 			c.player.Conn = c
 			c.engine.AddPlayer(c.player)
 			log.Printf("Player %q (ID %d) joined", sp.Name, c.player.ID)
 		} else {
 			c.player.Name = sp.Name
 			c.player.Skin = validatedSkin
+			c.player.Effect = validatedEffect
 		}
 
 		c.engine.SpawnPlayer(c.player)
+
+		// If multibox is enabled and the multi player is alive, teleport
+		// the freshly-spawned primary next to the multi player so they
+		// stay together after death.
+		c.mu.Lock()
+		if c.multiEnabled && c.multiAlive && c.multiPlayer != nil && c.multiPlayer.Alive {
+			mx, my := c.multiPlayer.Center()
+			c.engine.SpawnPlayerNear(c.player, mx, my, 500)
+		}
+		c.mu.Unlock()
 
 		// Send spawn result
 		c.sendMsg(protocol.BuildSpawnResult(c.shuffle, true))
@@ -316,8 +347,10 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		if !ok {
 			return
 		}
-		if c.player != nil {
-			c.player.SetMouse(float64(x), float64(y))
+		// Route mouse to the active multibox slot
+		activePlayer := c.activePlayer()
+		if activePlayer != nil {
+			activePlayer.SetMouse(float64(x), float64(y))
 		}
 		c.mu.Lock()
 		if c.spectating {
@@ -328,14 +361,22 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		c.mu.Unlock()
 
 	case protocol.OpSplit:
-		if c.player != nil && c.player.Alive {
-			c.player.QueueSplit()
+		p := c.activePlayer()
+		if p != nil && p.Alive {
+			p.QueueSplit()
 		}
 
 	case protocol.OpEject:
-		if c.player != nil && c.player.Alive {
-			c.player.QueueEject()
+		p := c.activePlayer()
+		if p != nil && p.Alive {
+			p.QueueEject()
 		}
+
+	case protocol.OpMultiboxToggle:
+		c.handleMultiboxToggle()
+
+	case protocol.OpMultiboxSwitch:
+		c.handleMultiboxSwitch()
 
 	case protocol.OpChat:
 		flags, text, ok := protocol.ParseChat(msg.Payload)
@@ -396,6 +437,103 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 			c.mu.Unlock()
 		}
 	}
+}
+
+// activePlayer returns the player for the currently active multibox slot.
+func (c *Client) activePlayer() *game.Player {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.multiEnabled && c.multiSlot == 1 {
+		return c.multiPlayer
+	}
+	return c.player
+}
+
+// handleMultiboxToggle enables or disables multibox for this client.
+func (c *Client) handleMultiboxToggle() {
+	c.mu.Lock()
+	wasEnabled := c.multiEnabled
+
+	if wasEnabled {
+		// Disable multibox: remove multi player from engine
+		c.multiEnabled = false
+		c.multiSlot = 0
+		mp := c.multiPlayer
+		c.multiPlayer = nil
+		c.multiAlive = false
+		c.multiRespawn = 0
+		c.knownMultiCells = nil
+		c.mu.Unlock()
+
+		if mp != nil {
+			c.engine.RemovePlayer(mp.ID)
+		}
+
+		c.sendMsg(protocol.BuildMultiboxState(c.shuffle, false, 0, false))
+		log.Printf("Multibox disabled for player %q", c.player.Name)
+	} else {
+		// Enable multibox: create second player near the primary
+		if c.player == nil || !c.player.Alive {
+			c.mu.Unlock()
+			return
+		}
+		name := c.player.Name
+		skin := c.player.Skin
+		effect := c.player.Effect
+		cx, cy := c.player.Center()
+
+		c.multiEnabled = true
+		c.multiSlot = 0
+		c.knownMultiCells = make(map[uint32]bool, 16)
+		c.mu.Unlock()
+
+		// Create the multi player with same name/skin/effect, spawn near primary
+		mp := game.NewPlayer(name, skin, effect)
+		mp.Color = c.player.Color
+		mp.IsSubscriber = c.player.IsSubscriber
+		mp.Clan = c.player.Clan
+		mp.Conn = c
+		c.engine.AddPlayer(mp)
+		c.engine.SpawnPlayerNear(mp, cx, cy, 500)
+
+		c.mu.Lock()
+		c.multiPlayer = mp
+		c.multiAlive = true
+		c.mu.Unlock()
+
+		// Send AddMultiCell for the newly spawned multi cells
+		for _, cell := range mp.Cells {
+			c.sendMsg(protocol.BuildAddMultiCell(c.shuffle, cell.ID))
+			c.mu.Lock()
+			c.knownMultiCells[cell.ID] = true
+			c.mu.Unlock()
+		}
+
+		c.sendMsg(protocol.BuildMultiboxState(c.shuffle, true, 0, true))
+		log.Printf("Multibox enabled for player %q (multi ID %d)", name, mp.ID)
+	}
+}
+
+// handleMultiboxSwitch switches the active multibox slot (Tab key).
+// No viewport change — both players share a viewport. Just flips which
+// player receives mouse/split/eject commands.
+func (c *Client) handleMultiboxSwitch() {
+	c.mu.Lock()
+	if !c.multiEnabled {
+		c.mu.Unlock()
+		return
+	}
+
+	if c.multiSlot == 0 {
+		c.multiSlot = 1
+	} else {
+		c.multiSlot = 0
+	}
+	newSlot := c.multiSlot
+	multiAlive := c.multiAlive
+	c.mu.Unlock()
+
+	c.sendMsg(protocol.BuildMultiboxState(c.shuffle, true, newSlot, multiAlive))
 }
 
 func (c *Client) sendMsg(msg []byte) {
@@ -531,21 +669,64 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 				camY = spectatorY
 			}
 		} else {
-			vp = game.ViewportForPlayer(client.player, cfg.MapWidth, cfg.MapHeight)
+			// Determine active player (primary or multi based on slot)
+			activeP := client.player
+			client.mu.Lock()
+			multiEnabled := client.multiEnabled
+			var multiP *game.Player
+			if multiEnabled && client.multiPlayer != nil {
+				multiP = client.multiPlayer
+				if client.multiSlot == 1 {
+					activeP = multiP
+				}
+			}
+			client.mu.Unlock()
+
+			if multiEnabled && multiP != nil {
+				// Shared viewport: centered on active, sized by combined mass
+				vp = game.ViewportForMultibox(activeP, multiP, cfg.MapWidth, cfg.MapHeight)
+			} else {
+				vp = game.ViewportForPlayer(activeP, cfg.MapWidth, cfg.MapHeight)
+			}
 		}
 
 		// Get ALL cells currently in this client's viewport (scans entire cell map)
 		visible := s.Engine.GetCellsInViewport(vp)
 
-		// Always include the player's own cells even if outside viewport
-		if client.player != nil && client.player.Alive && !isSpectating {
+		// Always include the active player's own cells even if outside viewport
+		client.mu.Lock()
+		activeP := client.player
+		multiEnabled := client.multiEnabled
+		var multiP *game.Player
+		if multiEnabled && client.multiPlayer != nil {
+			multiP = client.multiPlayer
+			if client.multiSlot == 1 {
+				activeP = client.multiPlayer
+			}
+		}
+		client.mu.Unlock()
+
+		if !isSpectating {
 			visibleOwnSet := make(map[uint32]bool, len(visible))
 			for _, c := range visible {
 				visibleOwnSet[c.ID] = true
 			}
-			for _, c := range client.player.Cells {
-				if !visibleOwnSet[c.ID] {
-					visible = append(visible, c)
+			// Always include primary player's cells
+			if client.player != nil && client.player.Alive {
+				for _, c := range client.player.Cells {
+					if !visibleOwnSet[c.ID] {
+						visible = append(visible, c)
+						visibleOwnSet[c.ID] = true
+					}
+				}
+			}
+			// Always include multi player's cells too
+			if multiEnabled && multiP != nil && multiP.Alive {
+				for _, c := range multiP.Cells {
+					if !visibleOwnSet[c.ID] {
+						visible = append(visible, c)
+						visibleOwnSet[c.ID] = true
+					}
 				}
 			}
 		}
@@ -582,11 +763,20 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 				clientRemoved = append(clientRemoved, id)
 				delete(client.knownCells, id)
 			}
+			// Also clean from my-cell / multi-cell tracking
+			delete(client.knownMyCells, id)
+			if client.knownMultiCells != nil {
+				delete(client.knownMultiCells, id)
+			}
 		}
 		for id := range client.knownCells {
 			if !visibleSet[id] {
 				clientRemoved = append(clientRemoved, id)
 				delete(client.knownCells, id)
+				delete(client.knownMyCells, id)
+				if client.knownMultiCells != nil {
+					delete(client.knownMultiCells, id)
+				}
 			}
 		}
 
@@ -595,7 +785,7 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 		msg := builder.Finish(clientRemoved)
 		client.sendMsg(msg)
 
-		// Send AddMyCell for any new cells the player gained (split, etc.)
+		// Send AddMyCell for primary player's cells
 		if client.player != nil && client.player.Alive && !isSpectating {
 			for _, cell := range client.player.Cells {
 				if !client.knownMyCells[cell.ID] {
@@ -605,12 +795,29 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 			}
 		}
 
+		// Send AddMultiCell for multi player's cells
+		if multiEnabled && multiP != nil && multiP.Alive && !isSpectating {
+			client.mu.Lock()
+			knownMulti := client.knownMultiCells
+			client.mu.Unlock()
+			if knownMulti != nil {
+				for _, cell := range multiP.Cells {
+					if !knownMulti[cell.ID] {
+						client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
+						client.mu.Lock()
+						client.knownMultiCells[cell.ID] = true
+						client.mu.Unlock()
+					}
+				}
+			}
+		}
+
 		// Send camera update
 		if isSpectating {
 			cam := protocol.BuildCamera(client.shuffle, float32(camX), float32(camY))
 			client.sendMsg(cam)
-		} else if client.player != nil && client.player.Alive {
-			cx, cy := client.player.Center()
+		} else if activeP != nil && activeP.Alive {
+			cx, cy := activeP.Center()
 			cam := protocol.BuildCamera(client.shuffle, float32(cx), float32(cy))
 			client.sendMsg(cam)
 		}
@@ -625,11 +832,12 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 			}
 		}
 
-		// Check if player died
+		// Check if primary player died
 		client.mu.Lock()
 		wasAlive := client.alive
 		client.mu.Unlock()
-		if client.player != nil && wasAlive && !client.player.Alive {
+		primaryDied := client.player != nil && wasAlive && !client.player.Alive
+		if primaryDied {
 			// Bank any remaining score delta and record the game
 			if client.userSub != "" && s.AuthMgr != nil {
 				score := int64(client.player.Score)
@@ -642,11 +850,112 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 			}
 			client.lastTickScore = 0
 
-			client.sendMsg(protocol.BuildClearMine(client.shuffle))
 			client.mu.Lock()
 			client.alive = false
 			client.knownMyCells = make(map[uint32]bool, 16)
 			client.mu.Unlock()
+
+			if multiEnabled && client.multiAlive {
+				// Multi still alive — schedule primary auto-respawn, don't end game
+				client.mu.Lock()
+				client.primaryRespawn = time.Now().Unix() + 3
+				client.mu.Unlock()
+			} else {
+				// No multi alive — game over; cancel any pending respawn timers
+				client.mu.Lock()
+				client.primaryRespawn = 0
+				client.multiRespawn = 0
+				client.mu.Unlock()
+				client.sendMsg(protocol.BuildClearMine(client.shuffle))
+			}
+		}
+
+		// Multibox: check if multi player died
+		if multiEnabled && multiP != nil {
+			client.mu.Lock()
+			multiWasAlive := client.multiAlive
+			client.mu.Unlock()
+
+			if multiWasAlive && !multiP.Alive {
+				client.mu.Lock()
+				client.multiAlive = false
+				client.knownMultiCells = make(map[uint32]bool, 16)
+				client.mu.Unlock()
+
+				if client.alive {
+					// Primary still alive — schedule multi auto-respawn
+					client.mu.Lock()
+					client.multiRespawn = time.Now().Unix() + 3
+					client.mu.Unlock()
+				} else {
+					// Both dead now — game over; cancel any pending respawn timers
+					client.mu.Lock()
+					client.primaryRespawn = 0
+					client.multiRespawn = 0
+					client.mu.Unlock()
+					client.sendMsg(protocol.BuildClearMine(client.shuffle))
+				}
+
+				client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, false))
+			}
+
+			// Auto-respawn multi player near primary
+			client.mu.Lock()
+			respawnTime := client.multiRespawn
+			client.mu.Unlock()
+
+			if respawnTime > 0 && time.Now().Unix() >= respawnTime {
+				if client.player != nil && client.player.Alive {
+					cx, cy := client.player.Center()
+					s.Engine.SpawnPlayerNear(multiP, cx, cy, 500)
+				} else {
+					s.Engine.SpawnPlayer(multiP)
+				}
+
+				client.mu.Lock()
+				client.multiAlive = true
+				client.multiRespawn = 0
+				client.mu.Unlock()
+
+				for _, cell := range multiP.Cells {
+					client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
+					client.mu.Lock()
+					client.knownMultiCells[cell.ID] = true
+					client.mu.Unlock()
+				}
+
+				client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, true))
+			}
+		}
+
+		// Auto-respawn primary player near multi
+		if multiEnabled {
+			client.mu.Lock()
+			primaryRespawnTime := client.primaryRespawn
+			client.mu.Unlock()
+
+			if primaryRespawnTime > 0 && time.Now().Unix() >= primaryRespawnTime {
+				if multiP != nil && multiP.Alive {
+					mx, my := multiP.Center()
+					s.Engine.SpawnPlayerNear(client.player, mx, my, 500)
+				} else {
+					s.Engine.SpawnPlayer(client.player)
+				}
+
+				client.mu.Lock()
+				client.alive = true
+				client.primaryRespawn = 0
+				client.mu.Unlock()
+
+				newMyCells := make(map[uint32]bool, len(client.player.Cells))
+				for _, cell := range client.player.Cells {
+					client.sendMsg(protocol.BuildAddMyCell(client.shuffle, cell.ID))
+					newMyCells[cell.ID] = true
+				}
+				client.mu.Lock()
+				client.knownMyCells = newMyCells
+				client.mu.Unlock()
+			}
 		}
 	}
 }
@@ -758,6 +1067,75 @@ func HandleAuth(w http.ResponseWriter, r *http.Request) {
 			},
 		},
 	})
+}
+
+// freeEffects is the set of border effects available to all players.
+var freeEffects = map[string]bool{
+	"neon":      true,
+	"prismatic": true,
+	"starfield": true,
+	"lightning": true,
+}
+
+// premiumEffects is the set of premium effects that require unlocking.
+var premiumEffects = map[string]bool{
+	"sakura":      true,
+	"frost":       true,
+	"shadow_aura": true,
+	"flame":       true,
+	"glitch":      true,
+	"blackhole":   true,
+}
+
+// GetPremiumEffectNames returns the list of premium effect IDs.
+func GetPremiumEffectNames() []string {
+	names := make([]string, 0, len(premiumEffects))
+	for k := range premiumEffects {
+		names = append(names, k)
+	}
+	return names
+}
+
+// validateEffect checks if this client is allowed to use the requested effect.
+// Free effects are available to all. Premium effects require unlocking.
+func (c *Client) validateEffect(effect string) string {
+	if effect == "" {
+		return ""
+	}
+
+	// Free effects — anyone can use
+	if freeEffects[effect] {
+		return effect
+	}
+
+	// Premium effects — require unlocking
+	if premiumEffects[effect] {
+		// Guest (no user sub) — cannot use premium effects
+		if c.userSub == "" {
+			return ""
+		}
+
+		if c.server.AuthMgr == nil {
+			return effect // no auth system, allow
+		}
+		user := c.server.AuthMgr.UserStore.Get(c.userSub)
+		if user == nil {
+			return ""
+		}
+
+		// Admin can use any effect
+		if user.IsAdmin {
+			return effect
+		}
+
+		// Check if the user has unlocked this effect
+		if stringInSlice(user.UnlockedEffects, effect) {
+			return effect
+		}
+		return "" // not unlocked
+	}
+
+	return "" // unknown effect
 }
 
 // validateSkinAccess checks if this client is allowed to use the requested skin.
@@ -940,4 +1318,176 @@ func (s *Server) HandleSkinsAccess(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(resp)
+}
+
+// EffectAccessEntry is one effect with access info for a specific user.
+type EffectAccessEntry struct {
+	ID          string `json:"id"`
+	Label       string `json:"label"`
+	Description string `json:"description"`
+	Category    string `json:"category"`   // "free" or "premium"
+	Accessible  bool   `json:"accessible"` // can the user equip this effect?
+	Reason      string `json:"reason,omitempty"`
+	Tokens      int    `json:"tokens,omitempty"`
+	TokensNeed  int    `json:"tokensNeed,omitempty"`
+}
+
+// effectsManifest is the static list of all effects for the access endpoint.
+var effectsManifest = []struct {
+	ID          string
+	Label       string
+	Description string
+	Category    string
+}{
+	{"neon", "Neon Pulse", "Pulsing neon glow around your cell", "free"},
+	{"prismatic", "Prismatic", "Shifting rainbow border", "free"},
+	{"starfield", "Starfield", "Orbiting stars around your cell", "free"},
+	{"lightning", "Lightning", "Crackling electric arcs", "free"},
+	{"sakura", "Sakura", "Cherry blossom petals drifting around your cell", "premium"},
+	{"frost", "Frost", "Ice crystals and frosty mist surrounding your cell", "premium"},
+	{"shadow_aura", "Shadow Aura", "Dark smoke tendrils — menacing dark energy", "premium"},
+	{"flame", "Flame", "Rising fire particles around your cell", "premium"},
+	{"glitch", "Glitch", "Digital distortion and RGB shift effect", "premium"},
+	{"blackhole", "Black Hole", "Dark gravity well with warped accretion rings", "premium"},
+}
+
+// HandleEffectsAccess returns all effects with per-user access info.
+// GET /api/effects/access?session=TOKEN
+func (s *Server) HandleEffectsAccess(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache")
+
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+
+	// Check if user is authenticated
+	var user *UserProfile
+	var isAdmin bool
+	sessionToken := r.URL.Query().Get("session")
+	if sessionToken != "" && s.AuthMgr != nil {
+		session := s.AuthMgr.ValidateSession(sessionToken)
+		if session != nil {
+			user = s.AuthMgr.UserStore.Get(session.UserSub)
+			if user != nil {
+				isAdmin = user.IsAdmin
+			}
+		}
+	}
+
+	result := make([]EffectAccessEntry, 0, len(effectsManifest))
+	for _, ef := range effectsManifest {
+		entry := EffectAccessEntry{
+			ID:          ef.ID,
+			Label:       ef.Label,
+			Description: ef.Description,
+			Category:    ef.Category,
+		}
+
+		if ef.Category == "free" {
+			entry.Accessible = true
+		} else if user == nil {
+			entry.Accessible = false
+			entry.Reason = "Sign in to unlock"
+		} else if isAdmin {
+			entry.Accessible = true
+		} else {
+			tokens := 0
+			if user.EffectTokens != nil {
+				tokens = user.EffectTokens[ef.ID]
+			}
+			entry.Tokens = tokens
+			entry.TokensNeed = TokensPerEffectUnlock
+			if stringInSlice(user.UnlockedEffects, ef.ID) {
+				entry.Accessible = true
+			} else {
+				entry.Accessible = false
+				entry.Reason = fmt.Sprintf("%d/%d tokens", tokens, TokensPerEffectUnlock)
+			}
+		}
+
+		result = append(result, entry)
+	}
+
+	resp := map[string]interface{}{
+		"effects": result,
+	}
+	if user != nil {
+		resp["level"] = LevelFromPoints(user.Points)
+		resp["pendingEffectTokens"] = user.PendingEffectTokens
+	}
+
+	json.NewEncoder(w).Encode(resp)
+}
+
+// HandleTopUsers returns the top users by all-time points (excluding bot names).
+// GET /api/top-users?limit=20
+func (s *Server) HandleTopUsers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+
+	limit := 20
+	if lq := r.URL.Query().Get("limit"); lq != "" {
+		var n int
+		if _, err := fmt.Sscanf(lq, "%d", &n); err == nil && n > 0 {
+			if n > 100 {
+				n = 100
+			}
+			limit = n
+		}
+	}
+
+	if s.AuthMgr == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"topUsers": []interface{}{}})
+		return
+	}
+	allUsers := s.AuthMgr.UserStore.GetAll()
+
+	// Filter out users with no points and sort by points descending
+	type topEntry struct {
+		Name   string `json:"name"`
+		Points int64  `json:"points"`
+		Level  int    `json:"level"`
+	}
+
+	entries := make([]topEntry, 0, len(allUsers))
+	for _, u := range allUsers {
+		if u.Points <= 0 {
+			continue
+		}
+		// Skip banned users
+		if u.IsBanned() {
+			continue
+		}
+		name := u.Name
+		if name == "" {
+			name = "unnamed"
+		}
+		entries = append(entries, topEntry{
+			Name:   name,
+			Points: u.Points,
+			Level:  LevelFromPoints(u.Points),
+		})
+	}
+
+	// Sort by points descending
+	for i := 0; i < len(entries); i++ {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].Points > entries[i].Points {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	if len(entries) > limit {
+		entries = entries[:limit]
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"topUsers": entries,
+	})
 }

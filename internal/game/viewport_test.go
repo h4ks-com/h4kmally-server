@@ -46,7 +46,7 @@ func TestViewportForPlayer_NilPlayer(t *testing.T) {
 }
 
 func TestViewportForPlayer_DeadPlayer(t *testing.T) {
-	p := NewPlayer("test", "")
+	p := NewPlayer("test", "", "")
 	p.Alive = false
 	vp := ViewportForPlayer(p, 1000, 1000)
 	if vp.Left != -1000 || vp.Right != 1000 {
@@ -55,7 +55,7 @@ func TestViewportForPlayer_DeadPlayer(t *testing.T) {
 }
 
 func TestViewportForPlayer_NoCells(t *testing.T) {
-	p := NewPlayer("test", "")
+	p := NewPlayer("test", "", "")
 	p.Alive = true
 	p.Cells = nil
 	vp := ViewportForPlayer(p, 1000, 1000)
@@ -65,7 +65,7 @@ func TestViewportForPlayer_NoCells(t *testing.T) {
 }
 
 func TestViewportForPlayer_AlivePlayerCentered(t *testing.T) {
-	p := NewPlayer("test", "")
+	p := NewPlayer("test", "", "")
 	p.Alive = true
 	cell := &Cell{ID: 999, Type: CellPlayer, X: 200, Y: 300, Size: 32, Owner: p}
 	p.Cells = []*Cell{cell}
@@ -88,11 +88,11 @@ func TestViewportForPlayer_AlivePlayerCentered(t *testing.T) {
 }
 
 func TestViewportForPlayer_LargerCellWiderView(t *testing.T) {
-	p1 := NewPlayer("small", "")
+	p1 := NewPlayer("small", "", "")
 	p1.Alive = true
 	p1.Cells = []*Cell{{ID: 1, Type: CellPlayer, X: 0, Y: 0, Size: 32, Owner: p1}}
 
-	p2 := NewPlayer("big", "")
+	p2 := NewPlayer("big", "", "")
 	p2.Alive = true
 	p2.Cells = []*Cell{{ID: 2, Type: CellPlayer, X: 0, Y: 0, Size: 200, Owner: p2}}
 

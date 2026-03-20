@@ -100,6 +100,8 @@ func main() {
 
 	// Wire up PremiumSkinNames so token granting can pick random premium skins
 	userStore.PremiumSkinNames = api.GetPremiumSkinNames
+	// Wire up PremiumEffectNames so token granting can pick random premium effects
+	userStore.PremiumEffectNames = api.GetPremiumEffectNames
 
 	// Payment provider + Shop (optional — enabled when BEANS_API_TOKEN is set)
 	var shopHandler *api.ShopHandler
@@ -131,6 +133,7 @@ func main() {
 	mux.HandleFunc("/api/auth/me", authMgr.HandleAuthMe)
 	mux.HandleFunc("/api/auth/profile", authMgr.HandleAuthProfile)
 	mux.HandleFunc("/api/auth/tokens/reveal", authMgr.HandleTokenReveal)
+	mux.HandleFunc("/api/auth/effect-tokens/reveal", authMgr.HandleEffectTokenReveal)
 
 	// Admin endpoints
 	mux.HandleFunc("/api/admin/users", adminHandler.HandleAdminUsers)
@@ -149,6 +152,8 @@ func main() {
 	// Skins API: manifest + access-checked list + image serving
 	mux.HandleFunc("/api/skins", api.HandleSkinsList)
 	mux.HandleFunc("/api/skins/access", server.HandleSkinsAccess)
+	mux.HandleFunc("/api/effects/access", server.HandleEffectsAccess)
+	mux.HandleFunc("/api/top-users", server.HandleTopUsers)
 	mux.Handle("/skins/", http.StripPrefix("/skins/", http.FileServer(http.Dir("skins"))))
 
 	// Shop endpoints (only if payment provider is configured)
@@ -196,7 +201,7 @@ func main() {
 	if envPort := os.Getenv("PORT"); envPort != "" {
 		addr = ":" + envPort
 	}
-	fmt.Println("=== h4kmally Server (SIG 0.0.1) ===")
+	fmt.Println("=== h4kmally Server (SIG 0.0.2) ===")
 	fmt.Printf("  WebSocket : ws://localhost%s/ws/\n", addr)
 	fmt.Printf("  HTTP      : http://localhost%s\n", addr)
 	fmt.Println("  Map       : 14142 x 14142")

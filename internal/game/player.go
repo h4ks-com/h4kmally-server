@@ -8,10 +8,11 @@ import (
 
 // Player represents a connected client.
 type Player struct {
-	ID   uint32 // unique player ID
-	Name string
-	Skin string
-	Clan string
+	ID     uint32 // unique player ID
+	Name   string
+	Skin   string
+	Effect string // border effect (e.g. "neon", "prismatic", "starfield", "lightning")
+	Clan   string
 
 	Color        [3]uint8
 	IsSubscriber bool
@@ -50,11 +51,12 @@ func nextPlayerID() uint32 {
 }
 
 // NewPlayer creates a new player with a random color.
-func NewPlayer(name, skin string) *Player {
+func NewPlayer(name, skin, effect string) *Player {
 	return &Player{
-		ID:   nextPlayerID(),
-		Name: name,
-		Skin: skin,
+		ID:     nextPlayerID(),
+		Name:   name,
+		Skin:   skin,
+		Effect: effect,
 		Color: [3]uint8{
 			uint8(rand.IntN(200) + 55),
 			uint8(rand.IntN(200) + 55),
@@ -211,6 +213,33 @@ func ViewportForPlayer(p *Player, mapW, mapH float64) Viewport {
 	for _, c := range p.Cells {
 		totalMass += c.Size * c.Size / 100.0
 	}
+
+	return viewportFromMass(cx, cy, totalMass, mapW, mapH)
+}
+
+// ViewportForMultibox computes a viewport centered on the active player,
+// sized by the combined mass of both primary and multi players.
+func ViewportForMultibox(active *Player, multi *Player, mapW, mapH float64) Viewport {
+	if active == nil || !active.Alive || len(active.Cells) == 0 {
+		return Viewport{Left: -mapW, Top: -mapH, Right: mapW, Bottom: mapH}
+	}
+
+	cx, cy := active.Center()
+
+	var totalMass float64
+	for _, c := range active.Cells {
+		totalMass += c.Size * c.Size / 100.0
+	}
+	if multi != nil && multi.Alive {
+		for _, c := range multi.Cells {
+			totalMass += c.Size * c.Size / 100.0
+		}
+	}
+
+	return viewportFromMass(cx, cy, totalMass, mapW, mapH)
+}
+
+func viewportFromMass(cx, cy, totalMass, mapW, mapH float64) Viewport {
 	equivRadius := math.Sqrt(math.Max(1, totalMass)) * 10.0
 	if equivRadius < 100 {
 		equivRadius = 100
