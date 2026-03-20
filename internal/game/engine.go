@@ -95,6 +95,7 @@ func (e *Engine) spawnInitialFood() {
 	for i := 0; i < e.Cfg.FoodCount; i++ {
 		c := NewFood(e.Cfg)
 		e.cells[c.ID] = c
+		e.grid.Insert(c)
 	}
 	e.foodCount = e.Cfg.FoodCount
 }
@@ -103,6 +104,7 @@ func (e *Engine) spawnInitialViruses() {
 	for i := 0; i < e.Cfg.VirusCount; i++ {
 		c := NewVirus(e.Cfg)
 		e.cells[c.ID] = c
+		e.grid.Insert(c)
 	}
 	e.virusCount = e.Cfg.VirusCount
 }
@@ -229,7 +231,16 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	e.tickNum++
 	e.updated = e.updated[:0]
 	e.eaten = e.eaten[:0]
+
+	// Clear Born flag for cells spawned between ticks (e.g. SpawnPlayer from WS handler).
+	// These cells were added to bornThisTick via addCell but never processed by step 9
+	// of the previous tick. Without this, Born stays true forever and moveMovableCells
+	// never adds them to e.updated (the "frozen cell" bug).
+	for _, c := range e.bornThisTick {
+		c.Born = false
+	}
 	e.bornThisTick = e.bornThisTick[:0]
+
 	// e.removed may have cross-tick removals (e.g. from RemovePlayer).
 	// Don't clear yet — continue appending this tick's removals to it.
 
