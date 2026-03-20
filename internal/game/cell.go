@@ -72,6 +72,13 @@ type Cell struct {
 
 	// Track if this cell is new this tick
 	Born bool
+
+	// Grid bucket index (set by SpatialGrid.Insert, used for fast Remove/Move)
+	gridIdx int
+
+	// LiveTick is stamped to the current engine tick number at end of each tick.
+	// Broadcast uses this to check if a cell still exists without a map lookup.
+	LiveTick uint64
 }
 
 // Mass returns the cell's mass computed as size²/100.

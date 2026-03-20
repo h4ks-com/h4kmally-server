@@ -60,7 +60,7 @@ type Client struct {
 
 	// Viewport tracking: set of cell IDs this client currently knows about.
 	// When a cell leaves the viewport, we send a removal so the client drops it.
-	knownCells   map[uint32]bool
+	knownCells   map[uint32]*game.Cell
 	knownMyCells map[uint32]bool // cell IDs for which we've sent AddMyCell
 
 	// Multibox: second player slot
@@ -141,7 +141,7 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		server:       s,
 		engine:       s.Engine,
 		send:         make(chan []byte, 256),
-		knownCells:   make(map[uint32]bool, 256),
+		knownCells:   make(map[uint32]*game.Cell, 256),
 		knownMyCells: make(map[uint32]bool, 16),
 		userSub:      userSub,
 		remoteIP:     remoteIP,
@@ -330,10 +330,10 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		// Send full world sync — all cells on the map
 		allCells := c.engine.AllCells()
 		syncBuilder := protocol.NewWorldUpdateBuilder(c.shuffle, nil)
-		newKnown := make(map[uint32]bool, len(allCells))
+		newKnown := make(map[uint32]*game.Cell, len(allCells))
 		for _, cell := range allCells {
 			syncBuilder.AddCell(cell)
-			newKnown[cell.ID] = true
+			newKnown[cell.ID] = cell
 		}
 		c.sendMsg(syncBuilder.Finish(nil))
 
@@ -402,10 +402,10 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		// Send full world sync for initial spectator view
 		allCells := c.engine.AllCells()
 		syncBuilder := protocol.NewWorldUpdateBuilder(c.shuffle, nil)
-		newKnown := make(map[uint32]bool, len(allCells))
+		newKnown := make(map[uint32]*game.Cell, len(allCells))
 		for _, cell := range allCells {
 			syncBuilder.AddCell(cell)
-			newKnown[cell.ID] = true
+			newKnown[cell.ID] = cell
 		}
 		c.sendMsg(syncBuilder.Finish(nil))
 		c.mu.Lock()
@@ -571,7 +571,7 @@ func (c *Client) writePump() {
 // Broadcast sends a viewport-culled world update to each connected client.
 // Uses a pre-built snapshot of all cells (from Tick) to avoid per-client
 // engine lock acquisition and grid queries — the biggest bottleneck at scale.
-func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, cellMap map[uint32]*game.Cell) {
+func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, tickNum uint64) {
 	// Build set of updated cell IDs for quick lookup (cells that moved/born)
 	updatedSet := make(map[uint32]bool, len(updated))
 	for _, c := range updated {
@@ -621,7 +621,7 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 				}
 			}()
 			for c := range work {
-				s.broadcastToClient(c, cfg, updatedSet, eaten, removed, snapshot, cellMap)
+				s.broadcastToClient(c, cfg, updatedSet, eaten, removed, snapshot, tickNum)
 			}
 		}()
 	}
@@ -629,9 +629,9 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 }
 
 // broadcastToClient sends the world update to a single client.
-// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, snapshot, cellMap) is read-only.
+// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, snapshot) is read-only.
 // Uses snapshot linear scan instead of grid queries — no engine locks needed.
-func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, cellMap map[uint32]*game.Cell) {
+func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, tickNum uint64) {
 	client.mu.Lock()
 	isSpectating := client.spectating
 	spectateTarget := client.spectateTarget
@@ -764,9 +764,9 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 		if !inVP {
 			continue
 		}
-		if !client.knownCells[c.ID] {
+		if client.knownCells[c.ID] == nil {
 			builder.AddCell(c)
-			client.knownCells[c.ID] = true
+			client.knownCells[c.ID] = c
 		} else if updatedSet[c.ID] {
 			builder.AddCell(c)
 		}
@@ -777,7 +777,7 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 	// - Cells the client knows about that left the viewport or no longer exist
 	var clientRemoved []uint32
 	for _, id := range removed {
-		if client.knownCells[id] {
+		if client.knownCells[id] != nil {
 			clientRemoved = append(clientRemoved, id)
 			delete(client.knownCells, id)
 		}
@@ -786,10 +786,9 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 			delete(client.knownMultiCells, id)
 		}
 	}
-	// Check known cells for viewport exits using cellMap + AABB (no visibleSet map needed)
-	for id := range client.knownCells {
-		c := cellMap[id]
-		if c == nil {
+	// Check known cells for viewport exits using liveTick + AABB (no cellMap needed)
+	for id, c := range client.knownCells {
+		if c.LiveTick != tickNum {
 			// Cell no longer exists (removed between ticks, e.g. RemovePlayer)
 			clientRemoved = append(clientRemoved, id)
 			delete(client.knownCells, id)

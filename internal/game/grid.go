@@ -41,10 +41,10 @@ func (g *SpatialGrid) Clear() {
 	}
 }
 
-// Insert adds a cell to the grid based on its center position.
-func (g *SpatialGrid) Insert(c *Cell) {
-	col := int((c.X + g.offsetX) * g.invCell)
-	row := int((c.Y + g.offsetY) * g.invCell)
+// bucketIndex returns the grid bucket index for a world position.
+func (g *SpatialGrid) bucketIndex(x, y float64) int {
+	col := int((x + g.offsetX) * g.invCell)
+	row := int((y + g.offsetY) * g.invCell)
 	if col < 0 {
 		col = 0
 	} else if col >= g.cols {
@@ -55,8 +55,46 @@ func (g *SpatialGrid) Insert(c *Cell) {
 	} else if row >= g.rows {
 		row = g.rows - 1
 	}
-	idx := row*g.cols + col
+	return row*g.cols + col
+}
+
+// Insert adds a cell to the grid based on its center position.
+// Also stores the bucket index on the cell for fast removal.
+func (g *SpatialGrid) Insert(c *Cell) {
+	idx := g.bucketIndex(c.X, c.Y)
+	c.gridIdx = idx
 	g.buckets[idx].cells = append(g.buckets[idx].cells, c)
+}
+
+// Remove removes a cell from its current grid bucket.
+// Uses the stored gridIdx for O(1) bucket lookup, then swaps with last.
+func (g *SpatialGrid) Remove(c *Cell) {
+	idx := c.gridIdx
+	if idx < 0 || idx >= len(g.buckets) {
+		return
+	}
+	bucket := &g.buckets[idx]
+	for i, bc := range bucket.cells {
+		if bc == c {
+			last := len(bucket.cells) - 1
+			bucket.cells[i] = bucket.cells[last]
+			bucket.cells[last] = nil
+			bucket.cells = bucket.cells[:last]
+			return
+		}
+	}
+}
+
+// Move removes a cell from its old bucket and inserts into the new one.
+// Only does work if the cell actually changed grid buckets.
+func (g *SpatialGrid) Move(c *Cell) {
+	newIdx := g.bucketIndex(c.X, c.Y)
+	if newIdx == c.gridIdx {
+		return // still in same bucket, no work needed
+	}
+	g.Remove(c)
+	c.gridIdx = newIdx
+	g.buckets[newIdx].cells = append(g.buckets[newIdx].cells, c)
 }
 
 // QueryRadius returns all cells within maxDist of (cx, cy).

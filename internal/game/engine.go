@@ -29,7 +29,6 @@ type Engine struct {
 
 	// Flat slice of ALL cells for cache-friendly iteration (rebuilt each tick).
 	// Go map iteration is 5-10× slower than slice iteration.
-	allCells []*Cell
 
 	// Separate tracking of non-food cells (players, ejects, viruses)
 	// so we can skip 2000+ food in moveAllCells and collision scans.
@@ -70,7 +69,6 @@ func NewEngine(cfg Config) *Engine {
 	e := &Engine{
 		Cfg:      cfg,
 		cells:    make(map[uint32]*Cell, 4096),
-		allCells: make([]*Cell, 0, 4096),
 		movable:  make([]*Cell, 0, 256),
 		snapshot: make([]*Cell, 0, 4096),
 		players:  make(map[uint32]*Player, 64),
@@ -83,9 +81,11 @@ func NewEngine(cfg Config) *Engine {
 	return e
 }
 
-// addCell registers a cell in the engine. Must be called under write lock.
+// addCell registers a cell in the engine and inserts it into the spatial grid.
+// Must be called under write lock.
 func (e *Engine) addCell(c *Cell) {
 	e.cells[c.ID] = c
+	e.grid.Insert(c)
 	if c.Born {
 		e.bornThisTick = append(e.bornThisTick, c)
 	}
@@ -124,6 +124,7 @@ func (e *Engine) RemovePlayer(id uint32) {
 	}
 	// Remove all cells
 	for _, c := range p.Cells {
+		e.grid.Remove(c)
 		e.removed = append(e.removed, c.ID)
 		delete(e.cells, c.ID)
 	}
@@ -220,8 +221,8 @@ func (e *Engine) findSpawnPos() (float64, float64) {
 
 // Tick runs one game tick. Returns the diff data for broadcasting.
 // snapshot is a flat slice of all cells after this tick (for broadcast viewport filtering).
-// cellMap is the internal cell map (for broadcast to check known-cell existence).
-func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, snapshot []*Cell, cellMap map[uint32]*Cell) {
+// tickNum is used by broadcast to verify cell liveness (cell.liveTick == tickNum).
+func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, snapshot []*Cell, tickNum uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -245,13 +246,10 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 		e.processPlayerEject(p)
 	}
 
-	// 2.5 Build allCells + movable in SINGLE map pass.
-	// Go map iteration is slow (~5-10× slower than slice). We iterate it once here,
-	// then use the allCells slice for grid rebuild and snapshot.
-	e.allCells = e.allCells[:0]
+	// 2.5 Build movable list (non-food cells only — skip iterating 2000+ food in move/collision).
+	// We still need a single map pass for this, but it's cheaper than the old grid rebuild.
 	e.movable = e.movable[:0]
 	for _, c := range e.cells {
-		e.allCells = append(e.allCells, c)
 		if c.Type != CellFood {
 			e.movable = append(e.movable, c)
 		}
@@ -260,9 +258,12 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	// 3. Move non-food cells only (food never moves)
 	e.moveMovableCells()
 
-	// 3.5 Rebuild spatial grid from allCells SLICE (fast) instead of cells MAP (slow).
-	// Cell positions are already updated by step 3. No cells added/removed since step 2.5.
-	e.rebuildGridFromSlice()
+	// 3.5 Update grid positions for cells that moved (incremental, not full rebuild).
+	// Food is already in the grid from spawn and never moves.
+	// Only movable cells (players, ejects, viruses) need grid.Move().
+	for _, c := range e.movable {
+		e.grid.Move(c)
+	}
 
 	// 4. Resolve collisions & eating (includes food eating by players)
 	e.resolveCollisions()
@@ -305,18 +306,19 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	e.removed = e.removed[:0]
 
 	// Build snapshot of all cells for broadcast (one map pass).
-	// Steps 4 (collision) and 6 (merge) may have added/removed cells since step 2.5,
-	// so we rebuild from the authoritative map.
 	e.snapshot = e.snapshot[:0]
-	// Also build a COPY of the cell map for broadcast to safely read without locks.
-	// (The live e.cells map can be modified by AddPlayer/RemovePlayer from WS handlers.)
-	cellMapCopy := make(map[uint32]*Cell, len(e.cells))
-	for id, c := range e.cells {
+	for _, c := range e.cells {
 		e.snapshot = append(e.snapshot, c)
-		cellMapCopy[id] = c
 	}
 
-	return e.updated, e.eaten, removed, e.snapshot, cellMapCopy
+	// Stamp all live cells with the current tick number.
+	// Broadcast uses this to check if a cell still exists (cell.liveTick == tickNum)
+	// instead of allocating + copying a 2000-entry map every tick.
+	for _, c := range e.snapshot {
+		c.LiveTick = e.tickNum
+	}
+
+	return e.updated, e.eaten, removed, e.snapshot, e.tickNum
 }
 
 // AllCells returns all cells in the game (for full-sync to new clients).
@@ -562,22 +564,6 @@ func (e *Engine) moveMovableCells() {
 	}
 }
 
-func (e *Engine) rebuildGrid() {
-	e.grid.Clear()
-	for _, c := range e.cells {
-		e.grid.Insert(c)
-	}
-}
-
-// rebuildGridFromSlice rebuilds the spatial grid from a pre-built flat slice.
-// ~5-10× faster than iterating the Go map directly.
-func (e *Engine) rebuildGridFromSlice() {
-	e.grid.Clear()
-	for _, c := range e.allCells {
-		e.grid.Insert(c)
-	}
-}
-
 func (e *Engine) resolveCollisions() {
 	// Collect only cells that CAN interact (players, viruses, ejects).
 	// Use pre-built movable list (non-food cells only).
@@ -740,6 +726,7 @@ func (e *Engine) resolveCollisions() {
 		if c.Owner != nil {
 			c.Owner.RemoveCell(id)
 		}
+		e.grid.Remove(c)
 		delete(e.cells, id)
 		e.removed = append(e.removed, id)
 	}
@@ -875,6 +862,7 @@ func (e *Engine) mergeCells() {
 					// Merge b into a
 					a.SetMass(a.Mass() + b.Mass())
 					merged[b.ID] = true
+					e.grid.Remove(b)
 					delete(e.cells, b.ID)
 					e.removed = append(e.removed, b.ID)
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})

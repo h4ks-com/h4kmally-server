@@ -164,7 +164,7 @@ func TestEngine_CellsInViewport_FindsFood(t *testing.T) {
 
 	// Viewport around (50, 50)
 	vp := Viewport{Left: 0, Top: 0, Right: 100, Bottom: 100}
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible := e.CellsInViewport(vp)
 
 	if len(visible) != 1 {
@@ -196,7 +196,7 @@ func TestEngine_CellsInViewport_LargeViewport(t *testing.T) {
 
 	// Viewport that covers all of them
 	vp := Viewport{Left: -100, Top: -100, Right: 600, Bottom: 600}
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible := e.CellsInViewport(vp)
 	if len(visible) != 50 {
 		t.Errorf("expected 50 visible cells, got %d", len(visible))
@@ -212,7 +212,7 @@ func TestEngine_GetCellsInViewport_ThreadSafe(t *testing.T) {
 	for i := uint32(1); i <= 10; i++ {
 		e.cells[i] = &Cell{ID: i, Type: CellFood, X: float64(i), Y: float64(i), Size: 10}
 	}
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	e.mu.Unlock()
 
 	// GetCellsInViewport acquires its own lock — should not deadlock

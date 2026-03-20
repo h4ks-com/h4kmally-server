@@ -4,6 +4,15 @@ import (
 	"testing"
 )
 
+// rebuildGridForTest is a test helper that rebuilds the spatial grid from the cells map.
+// Replaces the old EnginrebuildGridForTest(e) that was removed during incremental grid optimization.
+func rebuildGridForTest(e *Engine) {
+	e.grid.Clear()
+	for _, c := range e.cells {
+		e.grid.Insert(c)
+	}
+}
+
 // TestBroadcastScenario_PlayerMovesIntoFoodArea simulates the core problem:
 // food exists at position (500,500). Player starts at (0,0). Player moves to (500,500).
 // The viewport around (500,500) should discover the food.
@@ -34,7 +43,7 @@ func TestBroadcastScenario_PlayerMovesIntoFoodArea(t *testing.T) {
 
 	// Step 1: viewport at (0,0) — food at (500,500) should NOT be visible
 	vp1 := ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible1 := e.CellsInViewport(vp1)
 
 	foundFood := false
@@ -56,7 +65,7 @@ func TestBroadcastScenario_PlayerMovesIntoFoodArea(t *testing.T) {
 	playerCell.Y = 500
 
 	vp2 := ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible2 := e.CellsInViewport(vp2)
 
 	// Build visibleSet (what the server's Broadcast does)
@@ -122,7 +131,7 @@ func TestBroadcastScenario_FoodLeavesViewport(t *testing.T) {
 	playerCell.Y = 900
 
 	vp := ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible := e.CellsInViewport(vp)
 
 	visibleSet := make(map[uint32]bool)
@@ -185,7 +194,7 @@ func TestBroadcastScenario_StaticFoodDiscovery(t *testing.T) {
 	// Simulate initial spawn: client learns about all visible cells
 	knownCells := make(map[uint32]bool)
 	vp := ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible := e.CellsInViewport(vp)
 	for _, c := range visible {
 		knownCells[c.ID] = true
@@ -208,7 +217,7 @@ func TestBroadcastScenario_StaticFoodDiscovery(t *testing.T) {
 		pc.Y = pos[1]
 
 		vp = ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-		e.rebuildGrid()
+		rebuildGridForTest(e)
 		visible = e.CellsInViewport(vp)
 
 		visibleSet := make(map[uint32]bool)
@@ -249,7 +258,7 @@ func TestBroadcastScenario_StaticFoodDiscovery(t *testing.T) {
 	pc.X = -900
 	pc.Y = -900
 	vp = ViewportForPlayer(p, cfg.MapWidth, cfg.MapHeight)
-	e.rebuildGrid()
+	rebuildGridForTest(e)
 	visible = e.CellsInViewport(vp)
 
 	hasStaticFood := false
