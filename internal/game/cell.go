@@ -28,6 +28,12 @@ func nextCellID() uint32 {
 	}
 }
 
+// MaxCellID returns the current highest cell ID that has been allocated.
+// Used by broadcast to size flat lookup arrays.
+func MaxCellID() uint32 {
+	return cellIDGen.Load()
+}
+
 // Cell represents any entity in the game world.
 type Cell struct {
 	ID   uint32
