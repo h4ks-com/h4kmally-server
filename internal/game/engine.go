@@ -27,9 +27,17 @@ type Engine struct {
 	foodCount  int
 	virusCount int
 
+	// Flat slice of ALL cells for cache-friendly iteration (rebuilt each tick).
+	// Go map iteration is 5-10× slower than slice iteration.
+	allCells []*Cell
+
 	// Separate tracking of non-food cells (players, ejects, viruses)
 	// so we can skip 2000+ food in moveAllCells and collision scans.
 	movable []*Cell // rebuilt each tick from non-food cells
+
+	// Snapshot of all cells at end of tick, for broadcast to read
+	// without acquiring any engine locks (tick loop is sequential).
+	snapshot []*Cell
 
 	// Pre-allocated collision buffers (reused each tick)
 	active   []*Cell
@@ -62,7 +70,9 @@ func NewEngine(cfg Config) *Engine {
 	e := &Engine{
 		Cfg:      cfg,
 		cells:    make(map[uint32]*Cell, 4096),
+		allCells: make([]*Cell, 0, 4096),
 		movable:  make([]*Cell, 0, 256),
+		snapshot: make([]*Cell, 0, 4096),
 		players:  make(map[uint32]*Player, 64),
 		grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 		active:   make([]*Cell, 0, 256),
@@ -182,14 +192,23 @@ func (e *Engine) findSpawnPos() (float64, float64) {
 		x := rand.Float64()*w*2 - w
 		y := rand.Float64()*h*2 - h
 		safe := true
-		for _, c := range e.cells {
-			if c.Type == CellPlayer && c.Size > 100 {
-				dx := c.X - x
-				dy := c.Y - y
-				if math.Sqrt(dx*dx+dy*dy) < c.Size*3 {
-					safe = false
-					break
+		// Only check player cells, not all 2000+ cells (food/viruses can't hurt spawns)
+		for _, p := range e.players {
+			if !p.Alive {
+				continue
+			}
+			for _, c := range p.Cells {
+				if c.Size > 100 {
+					dx := c.X - x
+					dy := c.Y - y
+					if dx*dx+dy*dy < c.Size*c.Size*9 { // avoid sqrt: (dist < size*3) → dist² < size²*9
+						safe = false
+						break
+					}
 				}
+			}
+			if !safe {
+				break
 			}
 		}
 		if safe {
@@ -200,7 +219,9 @@ func (e *Engine) findSpawnPos() (float64, float64) {
 }
 
 // Tick runs one game tick. Returns the diff data for broadcasting.
-func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
+// snapshot is a flat slice of all cells after this tick (for broadcast viewport filtering).
+// cellMap is the internal cell map (for broadcast to check known-cell existence).
+func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, snapshot []*Cell, cellMap map[uint32]*Cell) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -224,9 +245,13 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 		e.processPlayerEject(p)
 	}
 
-	// 2.5 Build movable list (non-food cells only — skip iterating 2000+ food in move/collision)
+	// 2.5 Build allCells + movable in SINGLE map pass.
+	// Go map iteration is slow (~5-10× slower than slice). We iterate it once here,
+	// then use the allCells slice for grid rebuild and snapshot.
+	e.allCells = e.allCells[:0]
 	e.movable = e.movable[:0]
 	for _, c := range e.cells {
+		e.allCells = append(e.allCells, c)
 		if c.Type != CellFood {
 			e.movable = append(e.movable, c)
 		}
@@ -235,8 +260,9 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 	// 3. Move non-food cells only (food never moves)
 	e.moveMovableCells()
 
-	// 3.5 Rebuild spatial grid (after movement, before collisions & viewport)
-	e.rebuildGrid()
+	// 3.5 Rebuild spatial grid from allCells SLICE (fast) instead of cells MAP (slow).
+	// Cell positions are already updated by step 3. No cells added/removed since step 2.5.
+	e.rebuildGridFromSlice()
 
 	// 4. Resolve collisions & eating (includes food eating by players)
 	e.resolveCollisions()
@@ -278,7 +304,15 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 	removed = append(removed, e.removed...)
 	e.removed = e.removed[:0]
 
-	return e.updated, e.eaten, removed
+	// Build snapshot of all cells for broadcast (one map pass).
+	// Steps 4 (collision) and 6 (merge) may have added/removed cells since step 2.5,
+	// so we rebuild from the authoritative map.
+	e.snapshot = e.snapshot[:0]
+	for _, c := range e.cells {
+		e.snapshot = append(e.snapshot, c)
+	}
+
+	return e.updated, e.eaten, removed, e.snapshot, e.cells
 }
 
 // AllCells returns all cells in the game (for full-sync to new clients).
@@ -527,6 +561,15 @@ func (e *Engine) moveMovableCells() {
 func (e *Engine) rebuildGrid() {
 	e.grid.Clear()
 	for _, c := range e.cells {
+		e.grid.Insert(c)
+	}
+}
+
+// rebuildGridFromSlice rebuilds the spatial grid from a pre-built flat slice.
+// ~5-10× faster than iterating the Go map directly.
+func (e *Engine) rebuildGridFromSlice() {
+	e.grid.Clear()
+	for _, c := range e.allCells {
 		e.grid.Insert(c)
 	}
 }

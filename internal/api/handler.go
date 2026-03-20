@@ -569,9 +569,9 @@ func (c *Client) writePump() {
 }
 
 // Broadcast sends a viewport-culled world update to each connected client.
-// Each tick we scan ALL cells in the client's viewport to discover new ones,
-// and compare against knownCells to detect cells that left the viewport.
-func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32) {
+// Uses a pre-built snapshot of all cells (from Tick) to avoid per-client
+// engine lock acquisition and grid queries — the biggest bottleneck at scale.
+func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, cellMap map[uint32]*game.Cell) {
 	// Build set of updated cell IDs for quick lookup (cells that moved/born)
 	updatedSet := make(map[uint32]bool, len(updated))
 	for _, c := range updated {
@@ -621,7 +621,7 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 				}
 			}()
 			for c := range work {
-				s.broadcastToClient(c, cfg, updatedSet, eaten, removed)
+				s.broadcastToClient(c, cfg, updatedSet, eaten, removed, snapshot, cellMap)
 			}
 		}()
 	}
@@ -629,8 +629,9 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 }
 
 // broadcastToClient sends the world update to a single client.
-// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, cfg) is read-only.
-func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32) {
+// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, snapshot, cellMap) is read-only.
+// Uses snapshot linear scan instead of grid queries — no engine locks needed.
+func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, cellMap map[uint32]*game.Cell) {
 	client.mu.Lock()
 	isSpectating := client.spectating
 	spectateTarget := client.spectateTarget
@@ -734,10 +735,7 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 		}
 	}
 
-	// Get ALL cells currently in this client's viewport (scans entire cell map)
-	visible := s.Engine.GetCellsInViewport(vp)
-
-	// Always include the active player's own cells even if outside viewport
+	// Determine active player and multibox state (needed for viewport and own-cell inclusion)
 	client.mu.Lock()
 	activeP := client.player
 	multiEnabled := client.multiEnabled
@@ -748,48 +746,24 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 			activeP = client.multiPlayer
 		}
 	}
-	client.mu.Unlock()
-
-	if !isSpectating {
-		visibleOwnSet := make(map[uint32]bool, len(visible))
-		for _, c := range visible {
-			visibleOwnSet[c.ID] = true
-		}
-		// Always include primary player's cells
-		if client.player != nil && client.player.Alive {
-			for _, c := range client.player.Cells {
-				if !visibleOwnSet[c.ID] {
-					visible = append(visible, c)
-					visibleOwnSet[c.ID] = true
-				}
-			}
-		}
-		// Always include multi player's cells too
-		if multiEnabled && multiP != nil && multiP.Alive {
-			for _, c := range multiP.Cells {
-				if !visibleOwnSet[c.ID] {
-					visible = append(visible, c)
-					visibleOwnSet[c.ID] = true
-				}
-			}
-		}
-	}
-
-	// Build set of visible cell IDs
-	visibleSet := make(map[uint32]bool, len(visible))
-	for _, c := range visible {
-		visibleSet[c.ID] = true
-	}
-
-	// Lock client mutex while reading/writing knownCells
-	client.mu.Lock()
 
 	builder := protocol.NewWorldUpdateBuilder(client.shuffle, eaten)
 
-	// For each cell in the viewport:
-	// - If client doesn't know about it yet → send it (new to viewport)
-	// - If client knows it AND it was updated this tick → send update
-	for _, c := range visible {
+	// FAST PATH: Linear scan of snapshot for viewport filtering.
+	// This replaces the old GetCellsInViewport() which acquired an engine lock
+	// and allocated a grid query result per client. Linear scan of ~2000 cells
+	// with AABB check is cache-friendly and allocation-free.
+	for _, c := range snapshot {
+		inVP := game.CellInViewport(c, vp)
+		// Always include own cells even if outside viewport
+		if !inVP && !isSpectating && c.Owner != nil {
+			if c.Owner == client.player || (multiEnabled && c.Owner == multiP) {
+				inVP = true
+			}
+		}
+		if !inVP {
+			continue
+		}
 		if !client.knownCells[c.ID] {
 			builder.AddCell(c)
 			client.knownCells[c.ID] = true
@@ -800,21 +774,38 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 
 	// Build removal list:
 	// - Cells that were removed/eaten server-side
-	// - Cells the client knows about that are no longer in the viewport
+	// - Cells the client knows about that left the viewport or no longer exist
 	var clientRemoved []uint32
 	for _, id := range removed {
 		if client.knownCells[id] {
 			clientRemoved = append(clientRemoved, id)
 			delete(client.knownCells, id)
 		}
-		// Also clean from my-cell / multi-cell tracking
 		delete(client.knownMyCells, id)
 		if client.knownMultiCells != nil {
 			delete(client.knownMultiCells, id)
 		}
 	}
+	// Check known cells for viewport exits using cellMap + AABB (no visibleSet map needed)
 	for id := range client.knownCells {
-		if !visibleSet[id] {
+		c := cellMap[id]
+		if c == nil {
+			// Cell no longer exists (removed between ticks, e.g. RemovePlayer)
+			clientRemoved = append(clientRemoved, id)
+			delete(client.knownCells, id)
+			delete(client.knownMyCells, id)
+			if client.knownMultiCells != nil {
+				delete(client.knownMultiCells, id)
+			}
+			continue
+		}
+		inVP := game.CellInViewport(c, vp)
+		if !inVP && !isSpectating && c.Owner != nil {
+			if c.Owner == client.player || (multiEnabled && c.Owner == multiP) {
+				inVP = true
+			}
+		}
+		if !inVP {
 			clientRemoved = append(clientRemoved, id)
 			delete(client.knownCells, id)
 			delete(client.knownMyCells, id)
