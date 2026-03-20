@@ -189,9 +189,10 @@ func main() {
 				lastLB = time.Now()
 			}
 
-			// Persist user data periodically (every 5 seconds)
+			// Persist user data periodically (every 5 seconds) — in background goroutine
+			// to avoid blocking the tick loop with file I/O.
 			if time.Since(lastSave) >= 5*time.Second {
-				server.SaveUserPoints()
+				go server.SaveUserPoints()
 				lastSave = time.Now()
 			}
 		}

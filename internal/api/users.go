@@ -277,7 +277,8 @@ func (us *UserStore) RecordGame(sub string) {
 		return
 	}
 	user.GamesPlayed++
-	us.save()
+	// Note: no us.save() here — periodic SaveAll() handles persistence.
+	// save() does blocking file I/O and was called from the tick goroutine.
 }
 
 // UpdatePoints adds the score delta to the user's points and updates top score.

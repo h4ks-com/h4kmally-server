@@ -571,391 +571,416 @@ func (c *Client) writePump() {
 // Each tick we scan ALL cells in the client's viewport to discover new ones,
 // and compare against knownCells to detect cells that left the viewport.
 func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	cfg := s.Engine.Cfg
-
 	// Build set of updated cell IDs for quick lookup (cells that moved/born)
 	updatedSet := make(map[uint32]bool, len(updated))
 	for _, c := range updated {
 		updatedSet[c.ID] = true
 	}
 
-	for client := range s.clients {
-		if client.shuffle == nil {
-			continue
+	// Snapshot client list under brief lock, then release
+	s.mu.RLock()
+	clients := make([]*Client, 0, len(s.clients))
+	for c := range s.clients {
+		if c.shuffle != nil {
+			clients = append(clients, c)
 		}
+	}
+	s.mu.RUnlock()
 
-		client.mu.Lock()
-		isSpectating := client.spectating
-		spectateTarget := client.spectateTarget
-		spectatorFollowing := client.spectatorFollowing
-		godMode := client.godMode
-		spectatorX := client.spectatorX
-		spectatorY := client.spectatorY
-		spectatorMouseX := client.spectatorMouseX
-		spectatorMouseY := client.spectatorMouseY
-		client.mu.Unlock()
+	if len(clients) == 0 {
+		return
+	}
 
-		// Determine viewport
-		var vp game.Viewport
-		var camX, camY float64
-		if isSpectating {
-			if godMode {
-				// Admin god mode: see entire map
-				vp = game.Viewport{Left: -cfg.MapWidth, Top: -cfg.MapHeight, Right: cfg.MapWidth, Bottom: cfg.MapHeight}
-				camX = spectatorX
-				camY = spectatorY
-			} else if spectatorFollowing {
-				// Follow mode: track the target player
-				targetPlayer := s.Engine.GetPlayer(spectateTarget)
-				if targetPlayer == nil || !targetPlayer.Alive {
-					players := s.Engine.GetPlayers()
-					var best *game.Player
-					for _, p := range players {
-						if p.Alive && (best == nil || p.Score > best.Score) {
-							best = p
-						}
-					}
-					if best != nil {
-						targetPlayer = best
-						client.mu.Lock()
-						client.spectateTarget = best.ID
-						client.mu.Unlock()
+	cfg := s.Engine.Cfg
+
+	// Process each client concurrently
+	var wg sync.WaitGroup
+	wg.Add(len(clients))
+	for _, client := range clients {
+		go func(c *Client) {
+			defer wg.Done()
+			defer func() {
+				if r := recover(); r != nil {
+					// Client disconnected mid-broadcast (send on closed channel) — safe to ignore
+				}
+			}()
+			s.broadcastToClient(c, cfg, updatedSet, eaten, removed)
+		}(client)
+	}
+	wg.Wait()
+}
+
+// broadcastToClient sends the world update to a single client.
+// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, cfg) is read-only.
+func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32) {
+	client.mu.Lock()
+	isSpectating := client.spectating
+	spectateTarget := client.spectateTarget
+	spectatorFollowing := client.spectatorFollowing
+	godMode := client.godMode
+	spectatorX := client.spectatorX
+	spectatorY := client.spectatorY
+	spectatorMouseX := client.spectatorMouseX
+	spectatorMouseY := client.spectatorMouseY
+	client.mu.Unlock()
+
+	// Determine viewport
+	var vp game.Viewport
+	var camX, camY float64
+	if isSpectating {
+		if godMode {
+			// Admin god mode: see entire map
+			vp = game.Viewport{Left: -cfg.MapWidth, Top: -cfg.MapHeight, Right: cfg.MapWidth, Bottom: cfg.MapHeight}
+			camX = spectatorX
+			camY = spectatorY
+		} else if spectatorFollowing {
+			// Follow mode: track the target player
+			targetPlayer := s.Engine.GetPlayer(spectateTarget)
+			if targetPlayer == nil || !targetPlayer.Alive {
+				players := s.Engine.GetPlayers()
+				var best *game.Player
+				for _, p := range players {
+					if p.Alive && (best == nil || p.Score > best.Score) {
+						best = p
 					}
 				}
-				vp = game.ViewportForPlayer(targetPlayer, cfg.MapWidth, cfg.MapHeight)
-				if targetPlayer != nil && targetPlayer.Alive {
-					camX, camY = targetPlayer.Center()
-					// Keep spectator position in sync for smooth transition
+				if best != nil {
+					targetPlayer = best
 					client.mu.Lock()
-					client.spectatorX = camX
-					client.spectatorY = camY
+					client.spectateTarget = best.ID
 					client.mu.Unlock()
 				}
-			} else {
-				// Free-roam mode: move spectator toward mouse
-				speed := game.SpeedForSize(cfg.StartSize) * cfg.MoveSpeed * 40
-				dx := spectatorMouseX - spectatorX
-				dy := spectatorMouseY - spectatorY
-				dist := math.Sqrt(dx*dx + dy*dy)
-				if dist > 1 {
-					if speed > dist {
-						speed = dist
-					}
-					spectatorX += (dx / dist) * speed
-					spectatorY += (dy / dist) * speed
-					// Clamp to map bounds
-					if spectatorX < -cfg.MapWidth {
-						spectatorX = -cfg.MapWidth
-					}
-					if spectatorX > cfg.MapWidth {
-						spectatorX = cfg.MapWidth
-					}
-					if spectatorY < -cfg.MapHeight {
-						spectatorY = -cfg.MapHeight
-					}
-					if spectatorY > cfg.MapHeight {
-						spectatorY = cfg.MapHeight
-					}
-					client.mu.Lock()
-					client.spectatorX = spectatorX
-					client.spectatorY = spectatorY
-					client.mu.Unlock()
-				}
-				vp = game.ViewportForSpectator(spectatorX, spectatorY, cfg.MapWidth, cfg.MapHeight)
-				camX = spectatorX
-				camY = spectatorY
+			}
+			vp = game.ViewportForPlayer(targetPlayer, cfg.MapWidth, cfg.MapHeight)
+			if targetPlayer != nil && targetPlayer.Alive {
+				camX, camY = targetPlayer.Center()
+				// Keep spectator position in sync for smooth transition
+				client.mu.Lock()
+				client.spectatorX = camX
+				client.spectatorY = camY
+				client.mu.Unlock()
 			}
 		} else {
-			// Determine active player (primary or multi based on slot)
-			activeP := client.player
-			client.mu.Lock()
-			multiEnabled := client.multiEnabled
-			var multiP *game.Player
-			if multiEnabled && client.multiPlayer != nil {
-				multiP = client.multiPlayer
-				if client.multiSlot == 1 {
-					activeP = multiP
+			// Free-roam mode: move spectator toward mouse
+			speed := game.SpeedForSize(cfg.StartSize) * cfg.MoveSpeed * 40
+			dx := spectatorMouseX - spectatorX
+			dy := spectatorMouseY - spectatorY
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist > 1 {
+				if speed > dist {
+					speed = dist
 				}
+				spectatorX += (dx / dist) * speed
+				spectatorY += (dy / dist) * speed
+				// Clamp to map bounds
+				if spectatorX < -cfg.MapWidth {
+					spectatorX = -cfg.MapWidth
+				}
+				if spectatorX > cfg.MapWidth {
+					spectatorX = cfg.MapWidth
+				}
+				if spectatorY < -cfg.MapHeight {
+					spectatorY = -cfg.MapHeight
+				}
+				if spectatorY > cfg.MapHeight {
+					spectatorY = cfg.MapHeight
+				}
+				client.mu.Lock()
+				client.spectatorX = spectatorX
+				client.spectatorY = spectatorY
+				client.mu.Unlock()
 			}
-			client.mu.Unlock()
-
-			if multiEnabled && multiP != nil {
-				// Shared viewport: centered on active, sized by combined mass
-				vp = game.ViewportForMultibox(activeP, multiP, cfg.MapWidth, cfg.MapHeight)
-			} else {
-				vp = game.ViewportForPlayer(activeP, cfg.MapWidth, cfg.MapHeight)
-			}
+			vp = game.ViewportForSpectator(spectatorX, spectatorY, cfg.MapWidth, cfg.MapHeight)
+			camX = spectatorX
+			camY = spectatorY
 		}
-
-		// Get ALL cells currently in this client's viewport (scans entire cell map)
-		visible := s.Engine.GetCellsInViewport(vp)
-
-		// Always include the active player's own cells even if outside viewport
-		client.mu.Lock()
+	} else {
+		// Determine active player (primary or multi based on slot)
 		activeP := client.player
+		client.mu.Lock()
 		multiEnabled := client.multiEnabled
 		var multiP *game.Player
 		if multiEnabled && client.multiPlayer != nil {
 			multiP = client.multiPlayer
 			if client.multiSlot == 1 {
-				activeP = client.multiPlayer
+				activeP = multiP
 			}
 		}
 		client.mu.Unlock()
 
-		if !isSpectating {
-			visibleOwnSet := make(map[uint32]bool, len(visible))
-			for _, c := range visible {
-				visibleOwnSet[c.ID] = true
-			}
-			// Always include primary player's cells
-			if client.player != nil && client.player.Alive {
-				for _, c := range client.player.Cells {
-					if !visibleOwnSet[c.ID] {
-						visible = append(visible, c)
-						visibleOwnSet[c.ID] = true
-					}
+		if multiEnabled && multiP != nil {
+			// Shared viewport: centered on active, sized by combined mass
+			vp = game.ViewportForMultibox(activeP, multiP, cfg.MapWidth, cfg.MapHeight)
+		} else {
+			vp = game.ViewportForPlayer(activeP, cfg.MapWidth, cfg.MapHeight)
+		}
+	}
+
+	// Get ALL cells currently in this client's viewport (scans entire cell map)
+	visible := s.Engine.GetCellsInViewport(vp)
+
+	// Always include the active player's own cells even if outside viewport
+	client.mu.Lock()
+	activeP := client.player
+	multiEnabled := client.multiEnabled
+	var multiP *game.Player
+	if multiEnabled && client.multiPlayer != nil {
+		multiP = client.multiPlayer
+		if client.multiSlot == 1 {
+			activeP = client.multiPlayer
+		}
+	}
+	client.mu.Unlock()
+
+	if !isSpectating {
+		visibleOwnSet := make(map[uint32]bool, len(visible))
+		for _, c := range visible {
+			visibleOwnSet[c.ID] = true
+		}
+		// Always include primary player's cells
+		if client.player != nil && client.player.Alive {
+			for _, c := range client.player.Cells {
+				if !visibleOwnSet[c.ID] {
+					visible = append(visible, c)
+					visibleOwnSet[c.ID] = true
 				}
 			}
-			// Always include multi player's cells too
-			if multiEnabled && multiP != nil && multiP.Alive {
-				for _, c := range multiP.Cells {
-					if !visibleOwnSet[c.ID] {
-						visible = append(visible, c)
-						visibleOwnSet[c.ID] = true
-					}
+		}
+		// Always include multi player's cells too
+		if multiEnabled && multiP != nil && multiP.Alive {
+			for _, c := range multiP.Cells {
+				if !visibleOwnSet[c.ID] {
+					visible = append(visible, c)
+					visibleOwnSet[c.ID] = true
 				}
 			}
 		}
+	}
 
-		// Build set of visible cell IDs
-		visibleSet := make(map[uint32]bool, len(visible))
-		for _, c := range visible {
-			visibleSet[c.ID] = true
+	// Build set of visible cell IDs
+	visibleSet := make(map[uint32]bool, len(visible))
+	for _, c := range visible {
+		visibleSet[c.ID] = true
+	}
+
+	// Lock client mutex while reading/writing knownCells
+	client.mu.Lock()
+
+	builder := protocol.NewWorldUpdateBuilder(client.shuffle, eaten)
+
+	// For each cell in the viewport:
+	// - If client doesn't know about it yet → send it (new to viewport)
+	// - If client knows it AND it was updated this tick → send update
+	for _, c := range visible {
+		if !client.knownCells[c.ID] {
+			builder.AddCell(c)
+			client.knownCells[c.ID] = true
+		} else if updatedSet[c.ID] {
+			builder.AddCell(c)
 		}
+	}
 
-		// Lock client mutex while reading/writing knownCells
-		client.mu.Lock()
-
-		builder := protocol.NewWorldUpdateBuilder(client.shuffle, eaten)
-
-		// For each cell in the viewport:
-		// - If client doesn't know about it yet → send it (new to viewport)
-		// - If client knows it AND it was updated this tick → send update
-		for _, c := range visible {
-			if !client.knownCells[c.ID] {
-				builder.AddCell(c)
-				client.knownCells[c.ID] = true
-			} else if updatedSet[c.ID] {
-				builder.AddCell(c)
-			}
+	// Build removal list:
+	// - Cells that were removed/eaten server-side
+	// - Cells the client knows about that are no longer in the viewport
+	var clientRemoved []uint32
+	for _, id := range removed {
+		if client.knownCells[id] {
+			clientRemoved = append(clientRemoved, id)
+			delete(client.knownCells, id)
 		}
-
-		// Build removal list:
-		// - Cells that were removed/eaten server-side
-		// - Cells the client knows about that are no longer in the viewport
-		var clientRemoved []uint32
-		for _, id := range removed {
-			if client.knownCells[id] {
-				clientRemoved = append(clientRemoved, id)
-				delete(client.knownCells, id)
-			}
-			// Also clean from my-cell / multi-cell tracking
+		// Also clean from my-cell / multi-cell tracking
+		delete(client.knownMyCells, id)
+		if client.knownMultiCells != nil {
+			delete(client.knownMultiCells, id)
+		}
+	}
+	for id := range client.knownCells {
+		if !visibleSet[id] {
+			clientRemoved = append(clientRemoved, id)
+			delete(client.knownCells, id)
 			delete(client.knownMyCells, id)
 			if client.knownMultiCells != nil {
 				delete(client.knownMultiCells, id)
 			}
 		}
-		for id := range client.knownCells {
-			if !visibleSet[id] {
-				clientRemoved = append(clientRemoved, id)
-				delete(client.knownCells, id)
-				delete(client.knownMyCells, id)
-				if client.knownMultiCells != nil {
-					delete(client.knownMultiCells, id)
-				}
+	}
+
+	client.mu.Unlock()
+
+	msg := builder.Finish(clientRemoved)
+	client.sendMsg(msg)
+
+	// Send AddMyCell for primary player's cells
+	if client.player != nil && client.player.Alive && !isSpectating {
+		for _, cell := range client.player.Cells {
+			if !client.knownMyCells[cell.ID] {
+				client.sendMsg(protocol.BuildAddMyCell(client.shuffle, cell.ID))
+				client.knownMyCells[cell.ID] = true
 			}
 		}
+	}
 
-		client.mu.Unlock()
-
-		msg := builder.Finish(clientRemoved)
-		client.sendMsg(msg)
-
-		// Send AddMyCell for primary player's cells
-		if client.player != nil && client.player.Alive && !isSpectating {
-			for _, cell := range client.player.Cells {
-				if !client.knownMyCells[cell.ID] {
-					client.sendMsg(protocol.BuildAddMyCell(client.shuffle, cell.ID))
-					client.knownMyCells[cell.ID] = true
-				}
-			}
-		}
-
-		// Send AddMultiCell for multi player's cells
-		if multiEnabled && multiP != nil && multiP.Alive && !isSpectating {
-			client.mu.Lock()
-			knownMulti := client.knownMultiCells
-			client.mu.Unlock()
-			if knownMulti != nil {
-				for _, cell := range multiP.Cells {
-					if !knownMulti[cell.ID] {
-						client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
-						client.mu.Lock()
-						client.knownMultiCells[cell.ID] = true
-						client.mu.Unlock()
-					}
-				}
-			}
-		}
-
-		// Send camera update
-		if isSpectating {
-			cam := protocol.BuildCamera(client.shuffle, float32(camX), float32(camY))
-			client.sendMsg(cam)
-		} else if activeP != nil && activeP.Alive {
-			cx, cy := activeP.Center()
-			cam := protocol.BuildCamera(client.shuffle, float32(cx), float32(cy))
-			client.sendMsg(cam)
-		}
-
-		// Update live points for authenticated alive players
-		if client.player != nil && client.player.Alive && client.userSub != "" && s.AuthMgr != nil {
-			score := int64(client.player.Score)
-			delta := score - client.lastTickScore
-			if delta > 0 {
-				s.AuthMgr.UserStore.UpdatePoints(client.userSub, delta, score)
-				client.lastTickScore = score
-			}
-		}
-
-		// Check if primary player died
+	// Send AddMultiCell for multi player's cells
+	if multiEnabled && multiP != nil && multiP.Alive && !isSpectating {
 		client.mu.Lock()
-		wasAlive := client.alive
+		knownMulti := client.knownMultiCells
 		client.mu.Unlock()
-		primaryDied := client.player != nil && wasAlive && !client.player.Alive
-		if primaryDied {
-			// Bank any remaining score delta and record the game
-			if client.userSub != "" && s.AuthMgr != nil {
-				score := int64(client.player.Score)
-				remainingDelta := score - client.lastTickScore
-				if remainingDelta > 0 {
-					s.AuthMgr.UserStore.UpdatePoints(client.userSub, remainingDelta, score)
+		if knownMulti != nil {
+			for _, cell := range multiP.Cells {
+				if !knownMulti[cell.ID] {
+					client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
+					client.mu.Lock()
+					client.knownMultiCells[cell.ID] = true
+					client.mu.Unlock()
 				}
-				s.AuthMgr.UserStore.RecordGame(client.userSub)
-				log.Printf("Recorded game for user %s (score %d)", client.userSub, score)
 			}
-			client.lastTickScore = 0
+		}
+	}
 
+	// Send camera update
+	if isSpectating {
+		cam := protocol.BuildCamera(client.shuffle, float32(camX), float32(camY))
+		client.sendMsg(cam)
+	} else if activeP != nil && activeP.Alive {
+		cx, cy := activeP.Center()
+		cam := protocol.BuildCamera(client.shuffle, float32(cx), float32(cy))
+		client.sendMsg(cam)
+	}
+
+	// Update live points for authenticated alive players
+	if client.player != nil && client.player.Alive && client.userSub != "" && s.AuthMgr != nil {
+		score := int64(client.player.Score)
+		delta := score - client.lastTickScore
+		if delta > 0 {
+			s.AuthMgr.UserStore.UpdatePoints(client.userSub, delta, score)
+			client.lastTickScore = score
+		}
+	}
+
+	// Check if primary player died
+	client.mu.Lock()
+	wasAlive := client.alive
+	client.mu.Unlock()
+	primaryDied := client.player != nil && wasAlive && !client.player.Alive
+	if primaryDied {
+		// Bank any remaining score delta and record the game
+		if client.userSub != "" && s.AuthMgr != nil {
+			score := int64(client.player.Score)
+			remainingDelta := score - client.lastTickScore
+			if remainingDelta > 0 {
+				s.AuthMgr.UserStore.UpdatePoints(client.userSub, remainingDelta, score)
+			}
+			s.AuthMgr.UserStore.RecordGame(client.userSub)
+			log.Printf("Recorded game for user %s (score %d)", client.userSub, score)
+		}
+		client.lastTickScore = 0
+
+		client.mu.Lock()
+		client.alive = false
+		client.knownMyCells = make(map[uint32]bool, 16)
+		client.mu.Unlock()
+
+		if multiEnabled && client.multiAlive {
+			// Multi still alive — schedule primary auto-respawn, don't end game
 			client.mu.Lock()
-			client.alive = false
-			client.knownMyCells = make(map[uint32]bool, 16)
+			client.primaryRespawn = time.Now().Unix() + 3
+			client.mu.Unlock()
+		} else {
+			// No multi alive — game over; cancel any pending respawn timers
+			client.mu.Lock()
+			client.primaryRespawn = 0
+			client.multiRespawn = 0
+			client.mu.Unlock()
+			client.sendMsg(protocol.BuildClearMine(client.shuffle))
+		}
+	}
+
+	// Multibox: check if multi player died
+	if multiEnabled && multiP != nil {
+		client.mu.Lock()
+		multiWasAlive := client.multiAlive
+		client.mu.Unlock()
+
+		if multiWasAlive && !multiP.Alive {
+			client.mu.Lock()
+			client.multiAlive = false
+			client.knownMultiCells = make(map[uint32]bool, 16)
 			client.mu.Unlock()
 
-			if multiEnabled && client.multiAlive {
-				// Multi still alive — schedule primary auto-respawn, don't end game
+			if client.alive {
+				// Primary still alive — schedule multi auto-respawn
 				client.mu.Lock()
-				client.primaryRespawn = time.Now().Unix() + 3
+				client.multiRespawn = time.Now().Unix() + 3
 				client.mu.Unlock()
 			} else {
-				// No multi alive — game over; cancel any pending respawn timers
+				// Both dead now — game over; cancel any pending respawn timers
 				client.mu.Lock()
 				client.primaryRespawn = 0
 				client.multiRespawn = 0
 				client.mu.Unlock()
 				client.sendMsg(protocol.BuildClearMine(client.shuffle))
 			}
+
+			client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, false))
 		}
 
-		// Multibox: check if multi player died
-		if multiEnabled && multiP != nil {
-			client.mu.Lock()
-			multiWasAlive := client.multiAlive
-			client.mu.Unlock()
+		// Auto-respawn multi player near primary
+		client.mu.Lock()
+		respawnTime := client.multiRespawn
+		client.mu.Unlock()
 
-			if multiWasAlive && !multiP.Alive {
-				client.mu.Lock()
-				client.multiAlive = false
-				client.knownMultiCells = make(map[uint32]bool, 16)
-				client.mu.Unlock()
-
-				if client.alive {
-					// Primary still alive — schedule multi auto-respawn
-					client.mu.Lock()
-					client.multiRespawn = time.Now().Unix() + 3
-					client.mu.Unlock()
-				} else {
-					// Both dead now — game over; cancel any pending respawn timers
-					client.mu.Lock()
-					client.primaryRespawn = 0
-					client.multiRespawn = 0
-					client.mu.Unlock()
-					client.sendMsg(protocol.BuildClearMine(client.shuffle))
-				}
-
-				client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, false))
+		if respawnTime > 0 && time.Now().Unix() >= respawnTime {
+			if client.player != nil && client.player.Alive {
+				cx, cy := client.player.Center()
+				s.Engine.SpawnPlayerNear(multiP, cx, cy, 500)
+			} else {
+				s.Engine.SpawnPlayer(multiP)
 			}
 
-			// Auto-respawn multi player near primary
 			client.mu.Lock()
-			respawnTime := client.multiRespawn
+			client.multiAlive = true
+			client.multiRespawn = 0
 			client.mu.Unlock()
 
-			if respawnTime > 0 && time.Now().Unix() >= respawnTime {
-				if client.player != nil && client.player.Alive {
-					cx, cy := client.player.Center()
-					s.Engine.SpawnPlayerNear(multiP, cx, cy, 500)
-				} else {
-					s.Engine.SpawnPlayer(multiP)
-				}
-
+			for _, cell := range multiP.Cells {
+				client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
 				client.mu.Lock()
-				client.multiAlive = true
-				client.multiRespawn = 0
+				client.knownMultiCells[cell.ID] = true
 				client.mu.Unlock()
-
-				for _, cell := range multiP.Cells {
-					client.sendMsg(protocol.BuildAddMultiCell(client.shuffle, cell.ID))
-					client.mu.Lock()
-					client.knownMultiCells[cell.ID] = true
-					client.mu.Unlock()
-				}
-
-				client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, true))
 			}
+
+			client.sendMsg(protocol.BuildMultiboxState(client.shuffle, true, client.multiSlot, true))
 		}
+	}
 
-		// Auto-respawn primary player near multi
-		if multiEnabled {
+	// Auto-respawn primary player near multi
+	if multiEnabled {
+		client.mu.Lock()
+		primaryRespawnTime := client.primaryRespawn
+		client.mu.Unlock()
+
+		if primaryRespawnTime > 0 && time.Now().Unix() >= primaryRespawnTime {
+			if multiP != nil && multiP.Alive {
+				mx, my := multiP.Center()
+				s.Engine.SpawnPlayerNear(client.player, mx, my, 500)
+			} else {
+				s.Engine.SpawnPlayer(client.player)
+			}
+
 			client.mu.Lock()
-			primaryRespawnTime := client.primaryRespawn
+			client.alive = true
+			client.primaryRespawn = 0
 			client.mu.Unlock()
 
-			if primaryRespawnTime > 0 && time.Now().Unix() >= primaryRespawnTime {
-				if multiP != nil && multiP.Alive {
-					mx, my := multiP.Center()
-					s.Engine.SpawnPlayerNear(client.player, mx, my, 500)
-				} else {
-					s.Engine.SpawnPlayer(client.player)
-				}
-
-				client.mu.Lock()
-				client.alive = true
-				client.primaryRespawn = 0
-				client.mu.Unlock()
-
-				newMyCells := make(map[uint32]bool, len(client.player.Cells))
-				for _, cell := range client.player.Cells {
-					client.sendMsg(protocol.BuildAddMyCell(client.shuffle, cell.ID))
-					newMyCells[cell.ID] = true
-				}
-				client.mu.Lock()
-				client.knownMyCells = newMyCells
-				client.mu.Unlock()
+			newMyCells := make(map[uint32]bool, len(client.player.Cells))
+			for _, cell := range client.player.Cells {
+				client.sendMsg(protocol.BuildAddMyCell(client.shuffle, cell.ID))
+				newMyCells[cell.ID] = true
 			}
+			client.mu.Lock()
+			client.knownMyCells = newMyCells
+			client.mu.Unlock()
 		}
 	}
 }
