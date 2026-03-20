@@ -350,6 +350,8 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		c.knownIDs = newIDs
 		c.knownMyCells = newMyCells
 		c.alive = true
+		c.spectating = false
+		c.godMode = false
 		c.mu.Unlock()
 
 	case protocol.OpMouse:
@@ -407,6 +409,13 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		c.spectatorFollowing = true // start in follow mode
 		c.spectatorX = 0
 		c.spectatorY = 0
+		// Auto-enable god mode for admins
+		if c.server.AuthMgr != nil && c.userSub != "" {
+			user := c.server.AuthMgr.UserStore.Get(c.userSub)
+			if user != nil && user.IsAdmin {
+				c.godMode = true
+			}
+		}
 		c.mu.Unlock()
 		// Send full world sync for initial spectator view
 		allCells := c.engine.AllCells()
@@ -432,7 +441,7 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 
 	case protocol.OpBoostCheck:
-		// Spectator commands: 0x01 = toggle follow, 0x02 = toggle god mode
+		// Spectator commands: 0x01 = toggle follow
 		if len(msg.Payload) >= 1 {
 			cmd := msg.Payload[0]
 			c.mu.Lock()
@@ -441,13 +450,6 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 				c.spectatorFollowing = !c.spectatorFollowing
 				if c.spectatorFollowing {
 					c.spectateTarget = 0 // reset to auto-follow top player
-				}
-			case 0x02:
-				if c.server.AuthMgr != nil && c.userSub != "" {
-					user := c.server.AuthMgr.UserStore.Get(c.userSub)
-					if user != nil && user.IsAdmin {
-						c.godMode = !c.godMode
-					}
 				}
 			}
 			c.mu.Unlock()
@@ -684,12 +686,15 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 	// Determine viewport
 	var vp game.Viewport
 	var camX, camY float64
+	var camZoom float32
 	if isSpectating {
 		if godMode {
-			// Admin god mode: see entire map
+			// Admin god mode: see entire map, centered at (0,0)
 			vp = game.Viewport{Left: -cfg.MapWidth, Top: -cfg.MapHeight, Right: cfg.MapWidth, Bottom: cfg.MapHeight}
-			camX = spectatorX
-			camY = spectatorY
+			camX = 0
+			camY = 0
+			// Zoom to fit entire map in a 1920x1080 reference
+			camZoom = float32(960.0 / cfg.MapWidth)
 		} else if spectatorFollowing {
 			// Follow mode: track the target player
 			targetPlayer := s.Engine.GetPlayer(spectateTarget)
@@ -711,6 +716,19 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 			vp = game.ViewportForPlayer(targetPlayer, cfg.MapWidth, cfg.MapHeight)
 			if targetPlayer != nil && targetPlayer.Alive {
 				camX, camY = targetPlayer.Center()
+				// Compute zoom matching the followed player (OgarII formula)
+				var totalSize float64
+				for _, c := range targetPlayer.Cells {
+					totalSize += c.Size
+				}
+				if totalSize < 1 {
+					totalSize = 1
+				}
+				ratio := 64.0 / totalSize
+				if ratio > 1.0 {
+					ratio = 1.0
+				}
+				camZoom = float32(math.Pow(ratio, 0.4))
 				// Keep spectator position in sync for smooth transition
 				client.mu.Lock()
 				client.spectatorX = camX
@@ -750,6 +768,7 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 			vp = game.ViewportForSpectator(spectatorX, spectatorY, cfg.MapWidth, cfg.MapHeight)
 			camX = spectatorX
 			camY = spectatorY
+			camZoom = 0.4 // OgarII playerRoamViewScale
 		}
 	} else {
 		// Determine active player (primary or multi based on slot)
@@ -932,11 +951,11 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 
 	// Send camera update
 	if isSpectating {
-		cam := protocol.BuildCamera(client.shuffle, float32(camX), float32(camY))
+		cam := protocol.BuildCamera(client.shuffle, float32(camX), float32(camY), camZoom)
 		client.sendMsg(cam)
 	} else if activeP != nil && activeP.Alive {
 		cx, cy := activeP.Center()
-		cam := protocol.BuildCamera(client.shuffle, float32(cx), float32(cy))
+		cam := protocol.BuildCamera(client.shuffle, float32(cx), float32(cy), 0)
 		client.sendMsg(cam)
 	}
 

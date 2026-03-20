@@ -157,13 +157,13 @@ func BuildPingReply(st *ShuffleTable) []byte {
 	return []byte{st.Encode(OpPingReply)}
 }
 
-// BuildCamera builds a CAMERA message.
-func BuildCamera(st *ShuffleTable, x, y float32) []byte {
+// BuildCamera builds a CAMERA message with position and zoom.
+func BuildCamera(st *ShuffleTable, x, y, zoom float32) []byte {
 	buf := make([]byte, 13)
 	buf[0] = st.Encode(OpCamera)
 	binary.LittleEndian.PutUint32(buf[1:], math.Float32bits(x))
 	binary.LittleEndian.PutUint32(buf[5:], math.Float32bits(y))
-	binary.LittleEndian.PutUint32(buf[9:], 0)
+	binary.LittleEndian.PutUint32(buf[9:], math.Float32bits(zoom))
 	return buf
 }
 
