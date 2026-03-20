@@ -44,6 +44,10 @@ type Engine struct {
 	eaten   []EatEvent // eat events this tick
 	removed []uint32   // cell IDs removed this tick
 
+	// Queued player removals (processed at start of next Tick to avoid
+	// grid races between RemovePlayer and concurrent Broadcast reads).
+	pendingRemovals []uint32
+
 	// Leaderboard
 	Leaderboard  []LeaderEntry
 	lastLBUpdate time.Time
@@ -108,10 +112,11 @@ func (e *Engine) AddPlayer(p *Player) {
 	e.players[p.ID] = p
 }
 
-// RemovePlayer removes a player and all their cells.
-func (e *Engine) RemovePlayer(id uint32) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+// RemovePlayer removes a player and all their cells immediately.
+// MUST only be called while the engine lock is already held (e.g. from within Tick).
+// External callers (WS handlers) should use QueueRemovePlayer instead to avoid
+// grid data races with concurrent Broadcast reads.
+func (e *Engine) removePlayerLocked(id uint32) {
 	p, ok := e.players[id]
 	if !ok {
 		return
@@ -125,6 +130,23 @@ func (e *Engine) RemovePlayer(id uint32) {
 	p.Cells = nil
 	p.Alive = false
 	delete(e.players, id)
+}
+
+// RemovePlayer acquires the lock and removes a player immediately.
+// Prefer QueueRemovePlayer from WS handlers to avoid grid races with Broadcast.
+func (e *Engine) RemovePlayer(id uint32) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.removePlayerLocked(id)
+}
+
+// QueueRemovePlayer enqueues a player for removal at the start of the next Tick.
+// This is safe to call from WS handler goroutines — it avoids the data race where
+// RemovePlayer modifies the grid while Broadcast workers concurrently read it.
+func (e *Engine) QueueRemovePlayer(id uint32) {
+	e.mu.Lock()
+	e.pendingRemovals = append(e.pendingRemovals, id)
+	e.mu.Unlock()
 }
 
 // SpawnPlayer spawns a player into the world with one cell.
@@ -222,6 +244,13 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, ti
 	e.tickNum++
 	e.updated = e.updated[:0]
 	e.eaten = e.eaten[:0]
+
+	// Process queued player removals (from WS disconnect handlers).
+	// Done here under the Tick lock so grid modifications don't race with Broadcast.
+	for _, id := range e.pendingRemovals {
+		e.removePlayerLocked(id)
+	}
+	e.pendingRemovals = e.pendingRemovals[:0]
 
 	// Clear Born flag for cells spawned between ticks (e.g. SpawnPlayer from WS handler).
 	// These cells were added to bornThisTick via addCell but never processed by step 9

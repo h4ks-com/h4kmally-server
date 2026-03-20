@@ -197,7 +197,7 @@ type Viewport struct {
 }
 
 // ViewportForPlayer computes the visible world rectangle for a player.
-// Uses the same zoom formula as the client: zoom = (64/avgSize)^0.4 * 1.2
+// Uses OgarII zoom formula: scale = min(64/totalSize, 1)^0.4
 // The base viewport is 1920×1080 (reference resolution) scaled by 1/zoom.
 // We add a generous margin (1.5×) so cells entering/leaving view don't pop.
 func ViewportForPlayer(p *Player, mapW, mapH float64) Viewport {
@@ -208,17 +208,17 @@ func ViewportForPlayer(p *Player, mapW, mapH float64) Viewport {
 
 	cx, cy := p.Center()
 
-	// Compute equivalent radius from total mass (same as client)
-	var totalMass float64
+	// Sum of all cell radii (OgarII style)
+	var totalSize float64
 	for _, c := range p.Cells {
-		totalMass += c.Size * c.Size / 100.0
+		totalSize += c.Size
 	}
 
-	return viewportFromMass(cx, cy, totalMass, mapW, mapH)
+	return viewportFromSize(cx, cy, totalSize)
 }
 
 // ViewportForMultibox computes a viewport centered on the active player,
-// sized by the combined mass of both primary and multi players.
+// sized by the combined size of both primary and multi players.
 func ViewportForMultibox(active *Player, multi *Player, mapW, mapH float64) Viewport {
 	if active == nil || !active.Alive || len(active.Cells) == 0 {
 		return Viewport{Left: -mapW, Top: -mapH, Right: mapW, Bottom: mapH}
@@ -226,32 +226,31 @@ func ViewportForMultibox(active *Player, multi *Player, mapW, mapH float64) View
 
 	cx, cy := active.Center()
 
-	var totalMass float64
+	var totalSize float64
 	for _, c := range active.Cells {
-		totalMass += c.Size * c.Size / 100.0
+		totalSize += c.Size
 	}
 	if multi != nil && multi.Alive {
 		for _, c := range multi.Cells {
-			totalMass += c.Size * c.Size / 100.0
+			totalSize += c.Size
 		}
 	}
 
-	return viewportFromMass(cx, cy, totalMass, mapW, mapH)
+	return viewportFromSize(cx, cy, totalSize)
 }
 
-func viewportFromMass(cx, cy, totalMass, mapW, mapH float64) Viewport {
-	equivRadius := math.Sqrt(math.Max(1, totalMass)) * 10.0
-	if equivRadius < 100 {
-		equivRadius = 100
+func viewportFromSize(cx, cy, totalSize float64) Viewport {
+	// OgarII zoom formula: scale = min(64 / totalSize, 1) ^ 0.4
+	if totalSize < 1 {
+		totalSize = 1
 	}
-
-	// Proportional zoom: sqrt-based, matches client formula
-	zoom := math.Sqrt(100.0 / equivRadius)
-	if zoom < 0.02 {
-		zoom = 0.02
+	ratio := 64.0 / totalSize
+	if ratio > 1.0 {
+		ratio = 1.0
 	}
-	if zoom > 2.0 {
-		zoom = 2.0
+	zoom := math.Pow(ratio, 0.4)
+	if zoom < 0.01 {
+		zoom = 0.01
 	}
 
 	// Reference viewport at zoom=1 is approximately 1920×1080
@@ -269,11 +268,11 @@ func viewportFromMass(cx, cy, totalMass, mapW, mapH float64) Viewport {
 }
 
 // ViewportForSpectator computes the visible world rectangle for a spectator at a given position.
-// Uses the same viewport size as a starting-size player (zoom = 1.0).
+// Uses OgarII's playerRoamViewScale (0.4) for free-roam spectating.
 func ViewportForSpectator(cx, cy, mapW, mapH float64) Viewport {
-	// Starting player: mass=100, equivRadius=100, zoom=1.0
-	halfW := (1920.0 / 2.0) * 1.5
-	halfH := (1080.0 / 2.0) * 1.5
+	zoom := 0.4 // OgarII playerRoamViewScale
+	halfW := (1920.0 / 2.0) / zoom * 1.5
+	halfH := (1080.0 / 2.0) / zoom * 1.5
 	return Viewport{
 		Left:   cx - halfW,
 		Top:    cy - halfH,

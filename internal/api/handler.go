@@ -185,7 +185,7 @@ func (c *Client) handleConnection() {
 		c.server.mu.Unlock()
 
 		if c.player != nil {
-			c.engine.RemovePlayer(c.player.ID)
+			c.engine.QueueRemovePlayer(c.player.ID)
 			log.Printf("Player %q (ID %d) disconnected", c.player.Name, c.player.ID)
 		}
 		// Clean up multibox player
@@ -195,7 +195,7 @@ func (c *Client) handleConnection() {
 		c.multiEnabled = false
 		c.mu.Unlock()
 		if mp != nil {
-			c.engine.RemovePlayer(mp.ID)
+			c.engine.QueueRemovePlayer(mp.ID)
 		}
 
 		close(c.send)
@@ -289,7 +289,7 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 				if other.userSub == c.userSub {
 					log.Printf("Spawn dedup: removing ghost player %q (ID %d) from old connection",
 						other.player.Name, other.player.ID)
-					c.engine.RemovePlayer(other.player.ID)
+					c.engine.QueueRemovePlayer(other.player.ID)
 					other.player = nil
 				}
 			}
@@ -482,7 +482,7 @@ func (c *Client) handleMultiboxToggle() {
 		c.mu.Unlock()
 
 		if mp != nil {
-			c.engine.RemovePlayer(mp.ID)
+			c.engine.QueueRemovePlayer(mp.ID)
 		}
 
 		c.sendMsg(protocol.BuildMultiboxState(c.shuffle, false, 0, false))
