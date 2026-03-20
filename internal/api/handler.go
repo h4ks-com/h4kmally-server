@@ -577,6 +577,7 @@ func (c *Client) writePump() {
 // Uses a pre-built snapshot of all cells (from Tick) to avoid per-client
 // engine lock acquisition and grid queries — the biggest bottleneck at scale.
 func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, tickNum uint64) {
+	grid := s.Engine.Grid
 	// Build set of updated cell IDs for quick lookup (cells that moved/born)
 	updatedSet := make(map[uint32]bool, len(updated))
 	for _, c := range updated {
@@ -626,7 +627,7 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 				}
 			}()
 			for c := range work {
-				s.broadcastToClient(c, cfg, updatedSet, eaten, removed, snapshot, tickNum)
+				s.broadcastToClient(c, cfg, updatedSet, eaten, removed, tickNum, grid)
 			}
 		}()
 	}
@@ -634,9 +635,9 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 }
 
 // broadcastToClient sends the world update to a single client.
-// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, snapshot) is read-only.
-// Uses snapshot linear scan instead of grid queries — no engine locks needed.
-func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, tickNum uint64) {
+// Called concurrently from Broadcast — all shared data (updatedSet, eaten, removed, grid) is read-only.
+// Uses spatial grid QueryRect instead of linear scan — queries only cells near the viewport.
+func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet map[uint32]bool, eaten []game.EatEvent, removed []uint32, tickNum uint64, grid *game.SpatialGrid) {
 	client.mu.Lock()
 	isSpectating := client.spectating
 	spectateTarget := client.spectateTarget
@@ -754,11 +755,11 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 
 	builder := protocol.NewWorldUpdateBuilder(client.shuffle, eaten)
 
-	// FAST PATH: Linear scan of snapshot for viewport filtering.
-	// This replaces the old GetCellsInViewport() which acquired an engine lock
-	// and allocated a grid query result per client. Linear scan of ~2000 cells
-	// with AABB check is cache-friendly and allocation-free.
-	for _, c := range snapshot {
+	// Use spatial grid to find cells near the viewport — much faster than scanning all 2000+ cells.
+	// Margin of 500 catches large cells whose center is outside but body overlaps the viewport.
+	// Grid is read-only during broadcast (tick is done, next tick waits for broadcast to finish).
+	visible := grid.QueryRect(vp.Left, vp.Top, vp.Right, vp.Bottom, 500)
+	for _, c := range visible {
 		inVP := game.CellInViewport(c, vp)
 		// Always include own cells even if outside viewport
 		if !inVP && !isSpectating && c.Owner != nil {
@@ -774,6 +775,28 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedSet m
 			client.knownCells[c.ID] = c
 		} else if updatedSet[c.ID] {
 			builder.AddCell(c)
+		}
+	}
+
+	// Also include own cells that might be outside the grid query range
+	if !isSpectating && client.player != nil && client.player.Alive {
+		for _, c := range client.player.Cells {
+			if client.knownCells[c.ID] == nil {
+				builder.AddCell(c)
+				client.knownCells[c.ID] = c
+			} else if updatedSet[c.ID] {
+				builder.AddCell(c)
+			}
+		}
+		if multiEnabled && multiP != nil && multiP.Alive {
+			for _, c := range multiP.Cells {
+				if client.knownCells[c.ID] == nil {
+					builder.AddCell(c)
+					client.knownCells[c.ID] = c
+				} else if updatedSet[c.ID] {
+					builder.AddCell(c)
+				}
+			}
 		}
 	}
 

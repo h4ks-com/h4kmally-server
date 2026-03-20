@@ -21,7 +21,7 @@ type Engine struct {
 	mu      sync.RWMutex
 	cells   map[uint32]*Cell // all cells by ID
 	players map[uint32]*Player
-	grid    *SpatialGrid // spatial hash for fast queries
+	Grid    *SpatialGrid // spatial hash for fast queries (exported for broadcast)
 
 	// Running counters (avoid O(N) scans)
 	foodCount  int
@@ -72,7 +72,7 @@ func NewEngine(cfg Config) *Engine {
 		movable:  make([]*Cell, 0, 256),
 		snapshot: make([]*Cell, 0, 4096),
 		players:  make(map[uint32]*Player, 64),
-		grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 		active:   make([]*Cell, 0, 256),
 		toRemove: make(map[uint32]bool, 64),
 	}
@@ -85,7 +85,7 @@ func NewEngine(cfg Config) *Engine {
 // Must be called under write lock.
 func (e *Engine) addCell(c *Cell) {
 	e.cells[c.ID] = c
-	e.grid.Insert(c)
+	e.Grid.Insert(c)
 	if c.Born {
 		e.bornThisTick = append(e.bornThisTick, c)
 	}
@@ -95,7 +95,7 @@ func (e *Engine) spawnInitialFood() {
 	for i := 0; i < e.Cfg.FoodCount; i++ {
 		c := NewFood(e.Cfg)
 		e.cells[c.ID] = c
-		e.grid.Insert(c)
+		e.Grid.Insert(c)
 	}
 	e.foodCount = e.Cfg.FoodCount
 }
@@ -104,7 +104,7 @@ func (e *Engine) spawnInitialViruses() {
 	for i := 0; i < e.Cfg.VirusCount; i++ {
 		c := NewVirus(e.Cfg)
 		e.cells[c.ID] = c
-		e.grid.Insert(c)
+		e.Grid.Insert(c)
 	}
 	e.virusCount = e.Cfg.VirusCount
 }
@@ -126,7 +126,7 @@ func (e *Engine) RemovePlayer(id uint32) {
 	}
 	// Remove all cells
 	for _, c := range p.Cells {
-		e.grid.Remove(c)
+		e.Grid.Remove(c)
 		e.removed = append(e.removed, c.ID)
 		delete(e.cells, c.ID)
 	}
@@ -273,7 +273,7 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	// Food is already in the grid from spawn and never moves.
 	// Only movable cells (players, ejects, viruses) need grid.Move().
 	for _, c := range e.movable {
-		e.grid.Move(c)
+		e.Grid.Move(c)
 	}
 
 	// 4. Resolve collisions & eating (includes food eating by players)
@@ -608,7 +608,7 @@ func (e *Engine) resolveCollisions() {
 				maxRange = a.Size * 1.5
 			}
 		}
-		nearby := e.grid.QueryRadius(a.X, a.Y, maxRange)
+		nearby := e.Grid.QueryRadius(a.X, a.Y, maxRange)
 
 		for _, b := range nearby {
 			if b.ID == a.ID || toRemove[b.ID] {
@@ -737,7 +737,7 @@ func (e *Engine) resolveCollisions() {
 		if c.Owner != nil {
 			c.Owner.RemoveCell(id)
 		}
-		e.grid.Remove(c)
+		e.Grid.Remove(c)
 		delete(e.cells, id)
 		e.removed = append(e.removed, id)
 	}
@@ -873,7 +873,7 @@ func (e *Engine) mergeCells() {
 					// Merge b into a
 					a.SetMass(a.Mass() + b.Mass())
 					merged[b.ID] = true
-					e.grid.Remove(b)
+					e.Grid.Remove(b)
 					delete(e.cells, b.ID)
 					e.removed = append(e.removed, b.ID)
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
@@ -930,7 +930,7 @@ func (e *Engine) GetAllCells() []*Cell {
 // Must be called while holding at least a read lock.
 func (e *Engine) CellsInViewport(v Viewport) []*Cell {
 	// Use grid query with a margin for cell radius (largest cells ~500)
-	candidates := e.grid.QueryRect(v.Left, v.Top, v.Right, v.Bottom, 500)
+	candidates := e.Grid.QueryRect(v.Left, v.Top, v.Right, v.Bottom, 500)
 	result := make([]*Cell, 0, len(candidates))
 	for _, c := range candidates {
 		if CellInViewport(c, v) {

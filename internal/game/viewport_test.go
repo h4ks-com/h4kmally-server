@@ -151,7 +151,7 @@ func TestEngine_CellsInViewport_FindsFood(t *testing.T) {
 		Cfg:     cfg,
 		cells:   make(map[uint32]*Cell),
 		players: make(map[uint32]*Player),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 	}
 
 	// Place food at specific positions
@@ -181,7 +181,7 @@ func TestEngine_CellsInViewport_LargeViewport(t *testing.T) {
 		Cfg:     cfg,
 		cells:   make(map[uint32]*Cell),
 		players: make(map[uint32]*Player),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 	}
 
 	for i := uint32(1); i <= 50; i++ {

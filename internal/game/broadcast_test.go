@@ -7,9 +7,9 @@ import (
 // rebuildGridForTest is a test helper that rebuilds the spatial grid from the cells map.
 // Replaces the old EnginrebuildGridForTest(e) that was removed during incremental grid optimization.
 func rebuildGridForTest(e *Engine) {
-	e.grid.Clear()
+	e.Grid.Clear()
 	for _, c := range e.cells {
-		e.grid.Insert(c)
+		e.Grid.Insert(c)
 	}
 }
 
@@ -22,7 +22,7 @@ func TestBroadcastScenario_PlayerMovesIntoFoodArea(t *testing.T) {
 		Cfg:     cfg,
 		cells:   make(map[uint32]*Cell),
 		players: make(map[uint32]*Player),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 	}
 
 	// Place food at (500, 500) — far from the player's starting position
@@ -108,7 +108,7 @@ func TestBroadcastScenario_FoodLeavesViewport(t *testing.T) {
 		Cfg:     cfg,
 		cells:   make(map[uint32]*Cell),
 		players: make(map[uint32]*Player),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 	}
 
 	// Place food near origin
@@ -169,7 +169,7 @@ func TestBroadcastScenario_StaticFoodDiscovery(t *testing.T) {
 		Cfg:     cfg,
 		cells:   make(map[uint32]*Cell),
 		players: make(map[uint32]*Player),
-		grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
+		Grid:    NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 	}
 
 	// 100 food pellets scattered across the map, all with Born=false
