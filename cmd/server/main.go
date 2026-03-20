@@ -181,11 +181,11 @@ func main() {
 		lastSave := time.Now()
 
 		for range ticker.C {
-			updated, eaten, removed, snapshot, tickNum := engine.Tick()
+			updated, eaten, removed, tickNum := engine.Tick()
 			if botMgr != nil {
 				botMgr.Tick()
 			}
-			server.Broadcast(updated, eaten, removed, snapshot, tickNum)
+			server.Broadcast(updated, eaten, removed, tickNum)
 
 			// Broadcast leaderboard periodically
 			if time.Since(lastLB) >= cfg.LeaderboardRate {

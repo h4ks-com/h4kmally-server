@@ -129,10 +129,11 @@ func (g *SpatialGrid) QueryRadius(cx, cy, maxDist float64) []*Cell {
 	return result
 }
 
-// QueryRect returns all cells whose center is within the given rectangle (inclusive).
-// Useful for viewport queries. Also expands by margin to catch cells whose
-// body extends into the rect even if their center is outside.
-func (g *SpatialGrid) QueryRect(left, top, right, bottom, margin float64) []*Cell {
+// QueryRect appends all cells whose center is within the given rectangle (inclusive)
+// to the provided buffer and returns it. Useful for viewport queries.
+// Also expands by margin to catch cells whose body extends into the rect.
+// Pass buf[:0] to reuse a previously allocated slice.
+func (g *SpatialGrid) QueryRect(buf []*Cell, left, top, right, bottom, margin float64) []*Cell {
 	minCol := int((left - margin + g.offsetX) * g.invCell)
 	maxCol := int((right + margin + g.offsetX) * g.invCell)
 	minRow := int((top - margin + g.offsetY) * g.invCell)
@@ -151,12 +152,11 @@ func (g *SpatialGrid) QueryRect(left, top, right, bottom, margin float64) []*Cel
 		maxRow = g.rows - 1
 	}
 
-	var result []*Cell
 	for row := minRow; row <= maxRow; row++ {
 		base := row * g.cols
 		for col := minCol; col <= maxCol; col++ {
-			result = append(result, g.buckets[base+col].cells...)
+			buf = append(buf, g.buckets[base+col].cells...)
 		}
 	}
-	return result
+	return buf
 }

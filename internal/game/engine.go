@@ -27,16 +27,9 @@ type Engine struct {
 	foodCount  int
 	virusCount int
 
-	// Flat slice of ALL cells for cache-friendly iteration (rebuilt each tick).
-	// Go map iteration is 5-10× slower than slice iteration.
-
 	// Separate tracking of non-food cells (players, ejects, viruses)
 	// so we can skip 2000+ food in moveAllCells and collision scans.
 	movable []*Cell // rebuilt each tick from non-food cells
-
-	// Snapshot of all cells at end of tick, for broadcast to read
-	// without acquiring any engine locks (tick loop is sequential).
-	snapshot []*Cell
 
 	// Pre-allocated collision buffers (reused each tick)
 	active   []*Cell
@@ -70,7 +63,6 @@ func NewEngine(cfg Config) *Engine {
 		Cfg:      cfg,
 		cells:    make(map[uint32]*Cell, 4096),
 		movable:  make([]*Cell, 0, 256),
-		snapshot: make([]*Cell, 0, 4096),
 		players:  make(map[uint32]*Player, 64),
 		Grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 		active:   make([]*Cell, 0, 256),
@@ -222,9 +214,8 @@ func (e *Engine) findSpawnPos() (float64, float64) {
 }
 
 // Tick runs one game tick. Returns the diff data for broadcasting.
-// snapshot is a flat slice of all cells after this tick (for broadcast viewport filtering).
-// tickNum is used by broadcast to verify cell liveness (cell.liveTick == tickNum).
-func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, snapshot []*Cell, tickNum uint64) {
+// tickNum is the current tick number for version tracking.
+func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, tickNum uint64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -316,20 +307,7 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, sn
 	removed = append(removed, e.removed...)
 	e.removed = e.removed[:0]
 
-	// Build snapshot of all cells for broadcast (one map pass).
-	e.snapshot = e.snapshot[:0]
-	for _, c := range e.cells {
-		e.snapshot = append(e.snapshot, c)
-	}
-
-	// Stamp all live cells with the current tick number.
-	// Broadcast uses this to check if a cell still exists (cell.liveTick == tickNum)
-	// instead of allocating + copying a 2000-entry map every tick.
-	for _, c := range e.snapshot {
-		c.LiveTick = e.tickNum
-	}
-
-	return e.updated, e.eaten, removed, e.snapshot, e.tickNum
+	return e.updated, e.eaten, removed, e.tickNum
 }
 
 // AllCells returns all cells in the game (for full-sync to new clients).
@@ -930,7 +908,7 @@ func (e *Engine) GetAllCells() []*Cell {
 // Must be called while holding at least a read lock.
 func (e *Engine) CellsInViewport(v Viewport) []*Cell {
 	// Use grid query with a margin for cell radius (largest cells ~500)
-	candidates := e.Grid.QueryRect(v.Left, v.Top, v.Right, v.Bottom, 500)
+	candidates := e.Grid.QueryRect(nil, v.Left, v.Top, v.Right, v.Bottom, 500)
 	result := make([]*Cell, 0, len(candidates))
 	for _, c := range candidates {
 		if CellInViewport(c, v) {

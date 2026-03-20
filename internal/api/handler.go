@@ -590,7 +590,7 @@ func (c *Client) writePump() {
 
 // Broadcast sends a viewport-culled world update to each connected client.
 // Uses flat []bool arrays instead of maps for O(1) lookups with no hash overhead.
-func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, snapshot []*game.Cell, tickNum uint64) {
+func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed []uint32, tickNum uint64) {
 	grid := s.Engine.Grid
 
 	// Build flat array of updated cell IDs for O(1) lookup (replaces map[uint32]bool).
@@ -645,8 +645,18 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 					// Client disconnected mid-broadcast (send on closed channel) — safe to ignore
 				}
 			}()
+			// Pre-allocate worker-local buffers to avoid per-client GC pressure.
+			seen := make([]bool, arrLen)
+			newIDs := make([]uint32, 0, 512)
+			var visBuf []*game.Cell
 			for c := range work {
-				s.broadcastToClient(c, cfg, updatedArr, eaten, removed, tickNum, grid, arrLen)
+				newIDs, visBuf = s.broadcastToClient(c, cfg, updatedArr, eaten, removed, tickNum, grid, arrLen, seen, newIDs, visBuf)
+				// Clear only the bits that were set (faster than zeroing entire array).
+				for _, id := range newIDs {
+					if int(id) < len(seen) {
+						seen[id] = false
+					}
+				}
 			}
 		}()
 	}
@@ -657,7 +667,9 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 // Called concurrently from Broadcast — all shared data (updatedArr, eaten, removed, grid) is read-only.
 // Uses flat []bool arrays for O(1) lookups (no hash maps in the hot path).
 // Eliminates CellInViewport by using grid query as the "seen" set for viewport exit detection.
-func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr []bool, eaten []game.EatEvent, removed []uint32, tickNum uint64, grid *game.SpatialGrid, arrLen int) {
+// seen, newIDs, and visBuf are worker-local buffers passed in to avoid per-client allocations.
+// Returns newIDs and visBuf so the caller can reuse them.
+func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr []bool, eaten []game.EatEvent, removed []uint32, tickNum uint64, grid *game.SpatialGrid, arrLen int, seen []bool, newIDs []uint32, visBuf []*game.Cell) ([]uint32, []*game.Cell) {
 	client.mu.Lock()
 	isSpectating := client.spectating
 	spectateTarget := client.spectateTarget
@@ -783,16 +795,18 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 
 	builder := protocol.NewWorldUpdateBuilder(client.shuffle, eaten)
 
-	// Per-client "seen" set — marks cells returned by grid query this tick.
-	// Used for viewport exit detection: any known cell NOT seen is out of range.
-	// Flat []bool is ~100× faster than map[uint32]bool for this workload.
-	seen := make([]bool, arrLen)
+	// seen and newIDs are worker-local buffers (pre-allocated, zeroed by caller).
+	// seen marks cells returned by grid query this tick for viewport exit detection.
+	// Grow seen if needed (cell IDs can grow between ticks).
+	if len(seen) < arrLen {
+		seen = make([]bool, arrLen)
+	}
+	newIDs = newIDs[:0]
 
 	// Grid query: find cells near the viewport.
 	// Margin of 500 catches large cells whose center is outside but body overlaps.
 	// We trust the grid + margin and skip CellInViewport (saves ~23% CPU).
-	visible := grid.QueryRect(vp.Left, vp.Top, vp.Right, vp.Bottom, 500)
-	newIDs := make([]uint32, 0, len(visible)+20)
+	visible := grid.QueryRect(visBuf[:0], vp.Left, vp.Top, vp.Right, vp.Bottom, 500)
 	for _, c := range visible {
 		id := c.ID
 		if int(id) >= arrLen {
@@ -1058,6 +1072,7 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 			client.mu.Unlock()
 		}
 	}
+	return newIDs, visible
 }
 
 // BroadcastLeaderboard sends the leaderboard to all clients.
