@@ -199,9 +199,9 @@ func (c *Client) handleConnection() {
 		c.conn.Close()
 	}()
 
-	c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
-		c.conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 		return nil
 	})
 
@@ -547,7 +547,12 @@ func (c *Client) sendMsg(msg []byte) {
 
 func (c *Client) writePump() {
 	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
+	defer func() {
+		ticker.Stop()
+		// Close the connection so handleConnection's ReadMessage unblocks immediately.
+		// Without this, ghost cells linger until the read deadline (30-60s) fires.
+		c.conn.Close()
+	}()
 
 	for {
 		select {
