@@ -8,18 +8,26 @@ import (
 	"os"
 )
 
-// Bot names — used round-robin or randomly.
+// Bot names — styled after typical agar.io / sigmally player names.
 var botNames = []string{
-	"Bot Alpha", "Bot Bravo", "Bot Charlie", "Bot Delta", "Bot Echo",
-	"Bot Foxtrot", "Bot Golf", "Bot Hotel", "Bot India", "Bot Juliet",
-	"Bot Kilo", "Bot Lima", "Bot Mike", "Bot November", "Bot Oscar",
-	"Bot Papa", "Bot Quebec", "Bot Romeo", "Bot Sierra", "Bot Tango",
-	"Bot Uniform", "Bot Victor", "Bot Whiskey", "Bot X-ray", "Bot Yankee",
-	"Bot Zulu", "Bot Ace", "Bot Blaze", "Bot Cipher", "Bot Dagger",
-	"Bot Ember", "Bot Frost", "Bot Ghost", "Bot Hawk", "Bot Iron",
-	"Bot Jade", "Bot Knight", "Bot Luna", "Bot Mist", "Bot Nova",
-	"Bot Omega", "Bot Pulse", "Bot Raven", "Bot Storm", "Bot Titan",
-	"Bot Viper", "Bot Wolf", "Bot Zen", "Bot Apex", "Bot Comet",
+	// Clan-tag style
+	"ƧG phantom", "ƧG viper", "ƧG eclipse",
+	"ꜰɴ apex", "ꜰɴ blitz", "ꜰɴ shade",
+	"ᴛʏᴛ reaper", "ᴛʏᴛ nova", "ᴛʏᴛ chaos",
+	"ᴢᴛ wolf", "ᴢᴛ fury", "ᴢᴛ ice",
+	// Short / edgy
+	"ghost", "phantom", "reaper", "void", "glitch",
+	"ꜱʜᴀᴅᴏᴡ", "ᴅᴀʀᴋ", "ɴᴇᴏɴ", "ᴠᴏɪᴅ",
+	"toxic", "savage", "1v1 me", "W=team",
+	"pro", "noob", "legend", "tryhard",
+	// Minimalist
+	".", "..", "x", "zzz", "—", "_",
+	"ez", "gg", "rip", "lol", "bruh",
+	// Single-word cool
+	"Spectre", "Zenith", "Eclipse", "Avalanche", "Nebula",
+	"Hydra", "Cipher", "Wraith", "Flux", "Onyx",
+	"Karma", "Nyx", "Pulse", "Drift", "Haze",
+	"Abyss", "Ember", "Frost", "Solace", "Venom",
 }
 
 // freeSkinNames holds names of free skins loaded from the manifest.
