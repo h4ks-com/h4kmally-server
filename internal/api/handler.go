@@ -7,6 +7,7 @@ import (
 	"math"
 	"net"
 	"net/http"
+	"runtime"
 	"sync"
 	"time"
 
@@ -593,19 +594,36 @@ func (s *Server) Broadcast(updated []*game.Cell, eaten []game.EatEvent, removed 
 
 	cfg := s.Engine.Cfg
 
-	// Process each client concurrently
+	// Process each client concurrently, but limit parallelism to avoid
+	// cache thrashing on low-core Docker containers.
+	maxWorkers := runtime.NumCPU()
+	if maxWorkers < 2 {
+		maxWorkers = 2
+	}
+	if maxWorkers > len(clients) {
+		maxWorkers = len(clients)
+	}
+
 	var wg sync.WaitGroup
-	wg.Add(len(clients))
-	for _, client := range clients {
-		go func(c *Client) {
+	work := make(chan *Client, len(clients))
+	for _, c := range clients {
+		work <- c
+	}
+	close(work)
+
+	wg.Add(maxWorkers)
+	for i := 0; i < maxWorkers; i++ {
+		go func() {
 			defer wg.Done()
 			defer func() {
 				if r := recover(); r != nil {
 					// Client disconnected mid-broadcast (send on closed channel) — safe to ignore
 				}
 			}()
-			s.broadcastToClient(c, cfg, updatedSet, eaten, removed)
-		}(client)
+			for c := range work {
+				s.broadcastToClient(c, cfg, updatedSet, eaten, removed)
+			}
+		}()
 	}
 	wg.Wait()
 }

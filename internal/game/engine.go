@@ -27,9 +27,16 @@ type Engine struct {
 	foodCount  int
 	virusCount int
 
+	// Separate tracking of non-food cells (players, ejects, viruses)
+	// so we can skip 2000+ food in moveAllCells and collision scans.
+	movable []*Cell // rebuilt each tick from non-food cells
+
 	// Pre-allocated collision buffers (reused each tick)
 	active   []*Cell
 	toRemove map[uint32]bool
+
+	// Born cells this tick (avoids scanning all 2000+ cells)
+	bornThisTick []*Cell
 
 	// Per-tick diff for protocol broadcast
 	tickNum uint64
@@ -55,6 +62,7 @@ func NewEngine(cfg Config) *Engine {
 	e := &Engine{
 		Cfg:      cfg,
 		cells:    make(map[uint32]*Cell, 4096),
+		movable:  make([]*Cell, 0, 256),
 		players:  make(map[uint32]*Player, 64),
 		grid:     NewSpatialGrid(cfg.MapWidth, cfg.MapHeight, 500),
 		active:   make([]*Cell, 0, 256),
@@ -63,6 +71,14 @@ func NewEngine(cfg Config) *Engine {
 	e.spawnInitialFood()
 	e.spawnInitialViruses()
 	return e
+}
+
+// addCell registers a cell in the engine. Must be called under write lock.
+func (e *Engine) addCell(c *Cell) {
+	e.cells[c.ID] = c
+	if c.Born {
+		e.bornThisTick = append(e.bornThisTick, c)
+	}
 }
 
 func (e *Engine) spawnInitialFood() {
@@ -116,7 +132,7 @@ func (e *Engine) SpawnPlayer(p *Player) {
 
 	cell := NewPlayerCell(p, x, y, e.Cfg.StartSize)
 	cell.MergeAt = 0
-	e.cells[cell.ID] = cell
+	e.addCell(cell)
 
 	p.Cells = append(p.Cells[:0], cell)
 	p.Alive = true
@@ -151,7 +167,7 @@ func (e *Engine) SpawnPlayerNear(p *Player, nearX, nearY, offset float64) {
 
 	cell := NewPlayerCell(p, x, y, e.Cfg.StartSize)
 	cell.MergeAt = 0
-	e.cells[cell.ID] = cell
+	e.addCell(cell)
 
 	p.Cells = append(p.Cells[:0], cell)
 	p.Alive = true
@@ -191,6 +207,7 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 	e.tickNum++
 	e.updated = e.updated[:0]
 	e.eaten = e.eaten[:0]
+	e.bornThisTick = e.bornThisTick[:0]
 	// e.removed may have cross-tick removals (e.g. from RemovePlayer).
 	// Don't clear yet — continue appending this tick's removals to it.
 
@@ -207,13 +224,21 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 		e.processPlayerEject(p)
 	}
 
-	// 3. Move all cells
-	e.moveAllCells()
+	// 2.5 Build movable list (non-food cells only — skip iterating 2000+ food in move/collision)
+	e.movable = e.movable[:0]
+	for _, c := range e.cells {
+		if c.Type != CellFood {
+			e.movable = append(e.movable, c)
+		}
+	}
+
+	// 3. Move non-food cells only (food never moves)
+	e.moveMovableCells()
 
 	// 3.5 Rebuild spatial grid (after movement, before collisions & viewport)
 	e.rebuildGrid()
 
-	// 4. Resolve collisions & eating
+	// 4. Resolve collisions & eating (includes food eating by players)
 	e.resolveCollisions()
 
 	// 5. Apply decay to large cells
@@ -241,8 +266,8 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32) {
 		e.lastLBUpdate = time.Now()
 	}
 
-	// 9. Clean born flags
-	for _, c := range e.cells {
+	// 9. Clean born flags (only check cells born this tick, not all 2000+)
+	for _, c := range e.bornThisTick {
 		if c.Born {
 			e.updated = append(e.updated, c)
 			c.Born = false
@@ -275,27 +300,11 @@ func (e *Engine) spawnFood() {
 	if toSpawn > e.Cfg.FoodSpawnPer {
 		toSpawn = e.Cfg.FoodSpawnPer
 	}
-	// Use the grid (still populated from last tick) to find sparse areas.
-	// For each food to spawn, pick the least-dense spot among a few random candidates.
-	checkRadius := e.Cfg.MapWidth * 2 / 20 // ~5% of map width
+	// Spawn food at random positions. Skip expensive sparse-area search
+	// to save ~50 grid queries per tick.
 	for i := 0; i < toSpawn; i++ {
 		c := NewFood(e.Cfg)
-		bestX, bestY := c.X, c.Y
-		bestCount := len(e.grid.QueryRadius(c.X, c.Y, checkRadius))
-		// Try a few more random positions and pick the sparsest
-		for attempt := 0; attempt < 4; attempt++ {
-			rx := rand.Float64()*e.Cfg.MapWidth*2 - e.Cfg.MapWidth
-			ry := rand.Float64()*e.Cfg.MapHeight*2 - e.Cfg.MapHeight
-			cnt := len(e.grid.QueryRadius(rx, ry, checkRadius))
-			if cnt < bestCount {
-				bestX, bestY = rx, ry
-				bestCount = cnt
-			}
-		}
-		c.X = bestX
-		c.Y = bestY
-		e.cells[c.ID] = c
-		e.grid.Insert(c) // add to grid so subsequent spawns see it
+		e.addCell(c)
 		e.foodCount++
 	}
 }
@@ -303,7 +312,7 @@ func (e *Engine) spawnFood() {
 func (e *Engine) spawnViruses() {
 	for e.virusCount < e.Cfg.VirusCount {
 		c := NewVirus(e.Cfg)
-		e.cells[c.ID] = c
+		e.addCell(c)
 		e.virusCount++
 	}
 }
@@ -358,7 +367,7 @@ func (e *Engine) processPlayerSplit(p *Player) {
 		child.NoPushTicks = 15
 		c.NoPushTicks = 15
 
-		e.cells[child.ID] = child
+		e.addCell(child)
 		p.Cells = append(p.Cells, child)
 	}
 }
@@ -413,7 +422,7 @@ func (e *Engine) processPlayerEject(p *Player) {
 			c.R, c.G, c.B,
 			ejectSize,
 		)
-		e.cells[ej.ID] = ej
+		e.addCell(ej)
 	}
 }
 
@@ -429,8 +438,8 @@ const (
 	EjectSpread    = 0.0524           // random angle spread in radians (±3°)
 )
 
-func (e *Engine) moveAllCells() {
-	for _, c := range e.cells {
+func (e *Engine) moveMovableCells() {
+	for _, c := range e.movable {
 		moved := false
 
 		// Decrement push-apart suppression timer
@@ -524,17 +533,12 @@ func (e *Engine) rebuildGrid() {
 
 func (e *Engine) resolveCollisions() {
 	// Collect only cells that CAN interact (players, viruses, ejects).
-	// Food is passive — it only gets eaten BY players, so we check food
-	// from the player's perspective using the grid.
+	// Use pre-built movable list (non-food cells only).
+	// Food is passive — it only gets eaten BY player cells via grid query below.
 	active := e.active[:0]
-	for _, c := range e.cells {
-		if c.Type != CellFood {
-			active = append(active, c)
-		}
-	}
+	active = append(active, e.movable...)
 	e.active = active
 
-	// Also include all player cells (they eat food via grid query)
 	// Sort active by size descending so larger cells checked first
 	sort.Slice(active, func(i, j int) bool {
 		return active[i].Size > active[j].Size
@@ -553,12 +557,34 @@ func (e *Engine) resolveCollisions() {
 
 		// Query grid for nearby cells within interaction range
 		maxRange := a.Size * 2.5 // generous search radius
+
+		// Player cells also eat food — use larger radius for that
+		if a.Type == CellPlayer {
+			if a.Size*1.5 > maxRange {
+				maxRange = a.Size * 1.5
+			}
+		}
 		nearby := e.grid.QueryRadius(a.X, a.Y, maxRange)
 
 		for _, b := range nearby {
 			if b.ID == a.ID || toRemove[b.ID] {
 				continue
 			}
+
+			// Player eating food (fast path — most common interaction)
+			if a.Type == CellPlayer && b.Type == CellFood {
+				if CanEatFood(a, b) {
+					e.eatCell(a, b)
+					toRemove[b.ID] = true
+					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
+				}
+				continue
+			}
+			// Non-player active cells skip food entirely
+			if b.Type == CellFood {
+				continue
+			}
+
 			// Ensure a is always the larger cell
 			if b.Size > a.Size {
 				continue // b will process this pair when it's the active cell
@@ -610,13 +636,6 @@ func (e *Engine) resolveCollisions() {
 			if a.Type == CellVirus && b.Type == CellVirus {
 				continue
 			}
-			// Virus ignores regular food entirely
-			if a.Type == CellVirus && b.Type == CellFood {
-				continue
-			}
-			if a.Type == CellFood && b.Type == CellVirus {
-				continue
-			}
 			if a.Type == CellVirus && b.Type == CellEject {
 				if dist < a.Size {
 					a.FeedCount++
@@ -656,29 +675,6 @@ func (e *Engine) resolveCollisions() {
 				e.eatCell(a, b)
 				toRemove[b.ID] = true
 				e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
-			}
-		}
-	}
-
-	// Also: player cells eat food via grid (food was excluded from active list)
-	for _, p := range e.players {
-		if !p.Alive {
-			continue
-		}
-		for _, pc := range p.Cells {
-			if toRemove[pc.ID] {
-				continue
-			}
-			nearby := e.grid.QueryRadius(pc.X, pc.Y, pc.Size*1.5)
-			for _, food := range nearby {
-				if food.Type != CellFood || toRemove[food.ID] {
-					continue
-				}
-				if CanEatFood(pc, food) {
-					e.eatCell(pc, food)
-					toRemove[food.ID] = true
-					e.eaten = append(e.eaten, EatEvent{pc.ID, food.ID})
-				}
 			}
 		}
 	}
@@ -763,7 +759,7 @@ func (e *Engine) virusPop(player *Cell, virus *Cell) {
 	child.NoPushTicks = 15
 	player.NoPushTicks = 15
 
-	e.cells[child.ID] = child
+	e.addCell(child)
 	p.Cells = append(p.Cells, child)
 }
 
@@ -778,7 +774,7 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 	const virusSplitV0 = 600.0 * BoostDecayRate
 	child.VX = math.Cos(angle) * virusSplitV0
 	child.VY = math.Sin(angle) * virusSplitV0
-	e.cells[child.ID] = child
+	e.addCell(child)
 	e.virusCount++
 
 	v.Size = e.Cfg.VirusSize
