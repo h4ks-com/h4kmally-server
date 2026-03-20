@@ -1,8 +1,11 @@
 package game
 
 import (
+	"encoding/json"
+	"log"
 	"math"
 	"math/rand/v2"
+	"os"
 )
 
 // Bot names — used round-robin or randomly.
@@ -19,6 +22,31 @@ var botNames = []string{
 	"Bot Viper", "Bot Wolf", "Bot Zen", "Bot Apex", "Bot Comet",
 }
 
+// freeSkinNames holds names of free skins loaded from the manifest.
+var freeSkinNames []string
+
+func init() {
+	data, err := os.ReadFile("skins/manifest.json")
+	if err != nil {
+		log.Printf("bot: could not load skins manifest: %v", err)
+		return
+	}
+	var entries []struct {
+		Name     string `json:"name"`
+		Category string `json:"category"`
+	}
+	if err := json.Unmarshal(data, &entries); err != nil {
+		log.Printf("bot: could not parse skins manifest: %v", err)
+		return
+	}
+	for _, e := range entries {
+		if e.Category == "free" {
+			freeSkinNames = append(freeSkinNames, e.Name)
+		}
+	}
+	log.Printf("bot: loaded %d free skins", len(freeSkinNames))
+}
+
 // Bot wraps a Player with Ogar-style AI state.
 type Bot struct {
 	Player *Player
@@ -27,10 +55,14 @@ type Bot struct {
 	splitCooldown int // ticks until next split is allowed
 }
 
-// NewBot creates a new bot with a random name.
+// NewBot creates a new bot with a random name and random free skin.
 func NewBot() *Bot {
 	name := botNames[rand.IntN(len(botNames))]
-	p := NewPlayer(name, "", "")
+	skin := ""
+	if len(freeSkinNames) > 0 {
+		skin = freeSkinNames[rand.IntN(len(freeSkinNames))]
+	}
+	p := NewPlayer(name, skin, "")
 	p.IsSubscriber = false
 	return &Bot{
 		Player: p,
