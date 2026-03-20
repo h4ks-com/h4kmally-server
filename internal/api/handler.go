@@ -806,7 +806,10 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 	// Grid query: find cells near the viewport.
 	// Margin of 500 catches large cells whose center is outside but body overlaps.
 	// We trust the grid + margin and skip CellInViewport (saves ~23% CPU).
-	visible := grid.QueryRect(visBuf[:0], vp.Left, vp.Top, vp.Right, vp.Bottom, 500)
+	// Margin of 1500 (3× grid cell size) ensures cells enter/leave the server's
+	// tracking well off-screen, so the client never sees pop-in/pop-out.
+	// Client does its own precise viewport culling during rendering.
+	visible := grid.QueryRect(visBuf[:0], vp.Left, vp.Top, vp.Right, vp.Bottom, 1500)
 	for _, c := range visible {
 		id := c.ID
 		if int(id) >= arrLen {
