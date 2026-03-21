@@ -167,6 +167,20 @@ Offset  Type    Field
 
 Total: **1 byte**
 
+### DIRECTION_LOCK (opcode 24)
+
+Locks or unlocks the player's movement direction. While locked, cells continue moving along the heading at lock time; the mouse cursor is freed for aiming eject/split independently.
+
+```
+Offset  Type    Field
+0       u8      opcode (shuffled 24)
+1       u8      lock (1 = lock current heading, 0 = unlock)
+```
+
+Total: **2 bytes**
+
+Triggered by holding/releasing the **Shift** key.
+
 ### CHAT (opcode 99)
 
 Sends a chat message.
@@ -555,17 +569,21 @@ Client                              Server
   |--- MULTIBOX_SWITCH -------------->|  (17) Tab — switch control
   |<-- MULTIBOX_STATE (slot=1) -------|
   |                                    |
-  |--- CHAT (text) ------------------>|  (18) Chat message
+  |--- DIRECTION_LOCK (lock=1) ------->|  (18) Shift held — lock heading
+  |--- EJECT (aimed elsewhere) ------>|      W key — eject toward cursor
+  |--- DIRECTION_LOCK (lock=0) ------>|      Shift released — unlock
+  |                                    |
+  |--- CHAT (text) ------------------>|  (19) Chat message
   |<-- CHAT_RECV (broadcast) ---------|
   |                                    |
-  |--- SPECTATOR_CMD (follow) ------->|  (19) Toggle spectator follow
+  |--- SPECTATOR_CMD (follow) ------->|  (20) Toggle spectator follow
   |                                    |
-  |--- PING ------------------------->|  (20) Latency check
+  |--- PING ------------------------->|  (21) Latency check
   |<-- PING_REPLY --------------------|
   |                                    |
-  |<-- CLEAR_MINE -------------------|  (21) Player died
+  |<-- CLEAR_MINE -------------------|  (22) Player died
   |                                    |
-  |--- SPAWN (respawn) -------------->|  (22) Respawn
+  |--- SPAWN (respawn) -------------->|  (23) Respawn
   ...
 ```
 
