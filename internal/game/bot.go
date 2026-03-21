@@ -33,6 +33,12 @@ var botNames = []string{
 // freeSkinNames holds names of free skins loaded from the manifest.
 var freeSkinNames []string
 
+// allEffectNames holds all effect IDs that bots can randomly use.
+var allEffectNames = []string{
+	"neon", "prismatic", "starfield", "lightning",
+	"sakura", "frost", "shadow_aura", "flame", "glitch", "blackhole",
+}
+
 func init() {
 	data, err := os.ReadFile("skins/manifest.json")
 	if err != nil {
@@ -63,14 +69,18 @@ type Bot struct {
 	splitCooldown int // ticks until next split is allowed
 }
 
-// NewBot creates a new bot with a random name and random free skin.
+// NewBot creates a new bot with a random name, random free skin, and possibly a random effect.
 func NewBot() *Bot {
 	name := botNames[rand.IntN(len(botNames))]
 	skin := ""
 	if len(freeSkinNames) > 0 {
 		skin = freeSkinNames[rand.IntN(len(freeSkinNames))]
 	}
-	p := NewPlayer(name, skin, "")
+	effect := ""
+	if rand.IntN(3) == 0 { // ~33% chance of having an effect
+		effect = allEffectNames[rand.IntN(len(allEffectNames))]
+	}
+	p := NewPlayer(name, skin, effect)
 	p.IsSubscriber = false
 	return &Bot{
 		Player: p,

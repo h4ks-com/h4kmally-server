@@ -77,10 +77,11 @@ type Client struct {
 
 // Server manages all connected clients and the game engine.
 type Server struct {
-	Engine  *game.Engine
-	AuthMgr *AuthManager
-	clients map[*Client]bool
-	mu      sync.RWMutex
+	Engine     *game.Engine
+	AuthMgr    *AuthManager
+	ChatBridge *ChatBridge
+	clients    map[*Client]bool
+	mu         sync.RWMutex
 }
 
 // NewServer creates a new game server.
@@ -291,6 +292,15 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 						other.player.Name, other.player.ID)
 					c.engine.QueueRemovePlayer(other.player.ID)
 					other.player = nil
+					// Also remove the old connection's multibox player
+					other.mu.Lock()
+					if mp := other.multiPlayer; mp != nil {
+						c.engine.QueueRemovePlayer(mp.ID)
+						other.multiPlayer = nil
+						other.multiEnabled = false
+						other.multiAlive = false
+					}
+					other.mu.Unlock()
 				}
 			}
 			c.server.mu.RUnlock()
@@ -389,6 +399,9 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 
 	case protocol.OpMultiboxSwitch:
 		c.handleMultiboxSwitch()
+
+	case protocol.OpDirectionLock:
+		c.handleDirectionLock(msg.Payload)
 
 	case protocol.OpChat:
 		flags, text, ok := protocol.ParseChat(msg.Payload)
@@ -552,6 +565,22 @@ func (c *Client) handleMultiboxSwitch() {
 	c.mu.Unlock()
 
 	c.sendMsg(protocol.BuildMultiboxState(c.shuffle, true, newSlot, multiAlive))
+}
+
+// handleDirectionLock locks or unlocks the active player's movement direction.
+// When locked, the player's cells keep moving in the direction they were heading
+// at the moment of lock; mouse input is used only for eject/split aiming.
+func (c *Client) handleDirectionLock(payload []byte) {
+	if len(payload) < 1 {
+		return
+	}
+	lock := payload[0] == 1
+	p := c.activePlayer()
+	if p == nil || !p.Alive {
+		return
+	}
+
+	p.SetDirectionLock(lock)
 }
 
 func (c *Client) sendMsg(msg []byte) {
@@ -1126,6 +1155,11 @@ func (s *Server) BroadcastChat(sender *game.Player, text string, _ []byte) {
 		}
 		msg := protocol.BuildChat(client.shuffle, 0, sender.Color[0], sender.Color[1], sender.Color[2], sender.Name, text)
 		client.sendMsg(msg)
+	}
+
+	// Forward to external webhook if configured
+	if s.ChatBridge != nil {
+		s.ChatBridge.SendOutgoing(sender, text)
 	}
 }
 

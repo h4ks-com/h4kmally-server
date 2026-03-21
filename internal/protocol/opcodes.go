@@ -17,6 +17,7 @@ const (
 	OpEject          = 21
 	OpMultiboxToggle = 22 // toggle multibox on/off (1 byte opcode only)
 	OpMultiboxSwitch = 23 // switch active slot (1 byte opcode only)
+	OpDirectionLock  = 24 // lock/unlock movement direction (payload: 1 byte, 1=lock 0=unlock)
 	OpChat           = 99
 	OpBoostCheck     = 190
 	OpStatUpdate     = 191

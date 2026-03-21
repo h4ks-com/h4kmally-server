@@ -523,7 +523,14 @@ func (e *Engine) moveMovableCells() {
 		if c.Type == CellPlayer && c.Owner != nil {
 			p := c.Owner
 			p.mu.Lock()
-			mx, my := p.MouseX, p.MouseY
+			var mx, my float64
+			if p.DirectionLocked {
+				// Move along locked direction: project far ahead from cell center
+				mx = c.X + p.LockedDirX*10000
+				my = c.Y + p.LockedDirY*10000
+			} else {
+				mx, my = p.MouseX, p.MouseY
+			}
 			p.mu.Unlock()
 
 			dx := mx - c.X

@@ -31,6 +31,11 @@ type Player struct {
 	// Eject rate limiting (server-side cap: max 10 ejects/sec at 25Hz = 1 per ~2.5 ticks)
 	lastEjectTick uint64
 
+	// Direction lock: when locked, movement uses fixedDir instead of mouse
+	DirectionLocked bool
+	LockedDirX      float64 // normalized
+	LockedDirY      float64 // normalized
+
 	// State
 	Alive     bool
 	Score     float64 // total mass
@@ -150,6 +155,41 @@ func (p *Player) SetMouse(x, y float64) {
 	defer p.mu.Unlock()
 	p.MouseX = x
 	p.MouseY = y
+}
+
+// SetDirectionLock locks or unlocks the player's movement direction.
+// When locking, computes the current heading from center-of-mass toward mouse.
+func (p *Player) SetDirectionLock(lock bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if lock && !p.DirectionLocked {
+		// Compute current heading from center of mass toward mouse
+		cx, cy := 0.0, 0.0
+		totalMass := 0.0
+		for _, c := range p.Cells {
+			m := c.Mass()
+			cx += c.X * m
+			cy += c.Y * m
+			totalMass += m
+		}
+		if totalMass > 0 {
+			cx /= totalMass
+			cy /= totalMass
+		}
+		dx := p.MouseX - cx
+		dy := p.MouseY - cy
+		dist := math.Sqrt(dx*dx + dy*dy)
+		if dist > 1 {
+			p.LockedDirX = dx / dist
+			p.LockedDirY = dy / dist
+		} else {
+			p.LockedDirX = 1
+			p.LockedDirY = 0
+		}
+		p.DirectionLocked = true
+	} else if !lock {
+		p.DirectionLocked = false
+	}
 }
 
 // ConsumeSplit consumes one split from the queue. Returns true if there was one.

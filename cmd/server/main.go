@@ -157,6 +157,21 @@ func main() {
 	mux.HandleFunc("/api/top-users", server.HandleTopUsers)
 	mux.Handle("/skins/", http.StripPrefix("/skins/", http.FileServer(http.Dir("skins"))))
 
+	// Public API
+	mux.HandleFunc("/api/status", server.HandleStatus)
+
+	// Chat bridge (optional — enabled when CHAT_BRIDGE_TOKEN is set)
+	chatToken := os.Getenv("CHAT_BRIDGE_TOKEN")
+	chatWebhookURL := os.Getenv("CHAT_WEBHOOK_URL")
+	if chatToken != "" {
+		bridge := api.NewChatBridge(server, chatToken, chatWebhookURL)
+		server.ChatBridge = bridge
+		mux.HandleFunc("/api/chat/send", bridge.HandleIncoming)
+		log.Printf("Chat bridge enabled (webhook=%s)", chatWebhookURL)
+	} else {
+		log.Println("Chat bridge disabled (set CHAT_BRIDGE_TOKEN to enable)")
+	}
+
 	// pprof endpoints for CPU/memory profiling
 	mux.HandleFunc("/debug/pprof/", http.DefaultServeMux.ServeHTTP)
 

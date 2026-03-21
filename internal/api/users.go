@@ -299,17 +299,13 @@ func (us *UserStore) UpdatePoints(sub string, delta int64, currentScore int64) {
 		user.TopScore = currentScore
 	}
 
-	// Grant 3 tokens per level gained
+	// Grant 3 skin tokens per level gained (effect tokens are purchase-only)
 	levelsGained := newLevel - oldLevel
 	if levelsGained > 0 {
 		if user.SkinTokens == nil {
 			user.SkinTokens = make(map[string]int)
 		}
 		us.grantRandomTokensLocked(user, levelsGained*3)
-		if user.EffectTokens == nil {
-			user.EffectTokens = make(map[string]int)
-		}
-		us.grantRandomEffectTokensLocked(user, levelsGained*3)
 	}
 }
 
