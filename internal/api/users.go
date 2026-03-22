@@ -86,6 +86,9 @@ type UserProfile struct {
 	// Daily gift tracking
 	LastDailyGift int64  `json:"lastDailyGift,omitempty"` // unix timestamp of last gift
 	DailyGiftCode string `json:"dailyGiftCode,omitempty"` // current gift link code
+
+	// Clan
+	ClanID string `json:"clanId,omitempty"` // clan this user belongs to
 }
 
 // IsBanned returns true if the user is currently banned.
@@ -314,6 +317,27 @@ func (us *UserStore) SaveAll() {
 	us.mu.Lock()
 	defer us.mu.Unlock()
 	us.save()
+}
+
+// Save is an alias for SaveAll (used by external callers like clan handler).
+func (us *UserStore) Save() {
+	us.SaveAll()
+}
+
+// SetClanID sets the clan ID for a user.
+func (us *UserStore) SetClanID(sub, clanID string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user := us.users[sub]
+	if user != nil {
+		user.ClanID = clanID
+		us.save()
+	}
+}
+
+// GetUser returns a user profile by sub (alias for Get).
+func (us *UserStore) GetUser(sub string) *UserProfile {
+	return us.Get(sub)
 }
 
 // SetAdmin grants or revokes admin status for a user.

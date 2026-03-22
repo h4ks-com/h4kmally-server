@@ -61,8 +61,8 @@ type Client struct {
 	// Viewport tracking: flat arrays indexed by cell ID for O(1) lookups.
 	// knownSet[id]=true means this client has been told about cell #id.
 	// knownIDs is the list of known cell IDs (for iteration / exit checks).
-	knownSet  []bool
-	knownIDs  []uint32
+	knownSet     []bool
+	knownIDs     []uint32
 	knownMyCells map[uint32]bool // cell IDs for which we've sent AddMyCell
 
 	// Multibox: second player slot
@@ -77,11 +77,13 @@ type Client struct {
 
 // Server manages all connected clients and the game engine.
 type Server struct {
-	Engine     *game.Engine
-	AuthMgr    *AuthManager
-	ChatBridge *ChatBridge
-	clients    map[*Client]bool
-	mu         sync.RWMutex
+	Engine       *game.Engine
+	AuthMgr      *AuthManager
+	ChatBridge   *ChatBridge
+	ClanStore    *ClanStore
+	BattleRoyale *game.BattleRoyale
+	clients      map[*Client]bool
+	mu           sync.RWMutex
 }
 
 // NewServer creates a new game server.
@@ -403,6 +405,9 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 	case protocol.OpDirectionLock:
 		c.handleDirectionLock(msg.Payload)
 
+	case protocol.OpFreezePosition:
+		c.handleFreezePosition(msg.Payload)
+
 	case protocol.OpChat:
 		flags, text, ok := protocol.ParseChat(msg.Payload)
 		if !ok || c.player == nil || text == "" {
@@ -581,6 +586,20 @@ func (c *Client) handleDirectionLock(payload []byte) {
 	}
 
 	p.SetDirectionLock(lock)
+}
+
+// handleFreezePosition freezes or unfreezes the active player's cell positions.
+// When frozen, cells stop all movement — they stay exactly where they are.
+func (c *Client) handleFreezePosition(payload []byte) {
+	if len(payload) < 1 {
+		return
+	}
+	freeze := payload[0] == 1
+	p := c.activePlayer()
+	if p == nil || !p.Alive {
+		return
+	}
+	p.SetFrozen(freeze)
 }
 
 func (c *Client) sendMsg(msg []byte) {
@@ -1161,6 +1180,170 @@ func (s *Server) BroadcastChat(sender *game.Player, text string, _ []byte) {
 	if s.ChatBridge != nil {
 		s.ChatBridge.SendOutgoing(sender, text)
 	}
+}
+
+// BroadcastClanChat sends a clan chat message only to clients that are members of the given clan.
+// This is private clan chat — NOT forwarded to the IRC/Discord bridge.
+func (s *Server) BroadcastClanChat(clanID, senderName, text string) {
+	if s.ClanStore == nil {
+		return
+	}
+	clan := s.ClanStore.GetClan(clanID)
+	if clan == nil {
+		return
+	}
+
+	// Build set of clan member subs for O(1) lookup
+	memberSubs := make(map[string]bool, len(clan.Members))
+	for _, m := range clan.Members {
+		memberSubs[m.Sub] = true
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for client := range s.clients {
+		if client.shuffle == nil || !memberSubs[client.userSub] {
+			continue
+		}
+		// Use a neutral color (clan-themed) for clan chat
+		msg := protocol.BuildClanChat(client.shuffle, 100, 200, 255, senderName, text)
+		client.sendMsg(msg)
+	}
+}
+
+// BroadcastSystemChat sends a system chat message to all connected clients.
+func (s *Server) BroadcastSystemChat(text string) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for client := range s.clients {
+		if client.shuffle == nil {
+			continue
+		}
+		// System messages in yellow
+		msg := protocol.BuildChat(client.shuffle, 0, 255, 200, 50, "[Server]", text)
+		client.sendMsg(msg)
+	}
+}
+
+// BroadcastClanPositions sends clan member positions to all online clan members.
+// Called periodically from the tick loop for clans with online members.
+func (s *Server) BroadcastClanPositions() {
+	if s.ClanStore == nil {
+		return
+	}
+
+	s.mu.RLock()
+	// Build a map: userSub → (player, client)
+	type clientInfo struct {
+		client *Client
+		player *game.Player
+	}
+	onlineUsers := make(map[string]clientInfo, len(s.clients))
+	for c := range s.clients {
+		if c.shuffle == nil || c.userSub == "" {
+			continue
+		}
+		if c.player != nil && c.player.Alive {
+			onlineUsers[c.userSub] = clientInfo{client: c, player: c.player}
+		}
+	}
+	s.mu.RUnlock()
+
+	if len(onlineUsers) == 0 {
+		return
+	}
+
+	// For each clan that has online members, build and send positions
+	s.ClanStore.mu.RLock()
+	defer s.ClanStore.mu.RUnlock()
+
+	for _, clan := range s.ClanStore.clans {
+		// Collect online clan members
+		var onlineMembers []struct {
+			sub    string
+			player *game.Player
+			ci     clientInfo
+		}
+		for _, m := range clan.Members {
+			if ci, ok := onlineUsers[m.Sub]; ok {
+				onlineMembers = append(onlineMembers, struct {
+					sub    string
+					player *game.Player
+					ci     clientInfo
+				}{sub: m.Sub, player: ci.player, ci: ci})
+			}
+		}
+
+		if len(onlineMembers) < 2 {
+			continue // need at least 2 online to share positions
+		}
+
+		// Build position data for all online members
+		var positions []protocol.ClanMemberPos
+		for _, om := range onlineMembers {
+			cx, cy := om.player.Center()
+			var totalSize float64
+			for _, cell := range om.player.Cells {
+				totalSize += cell.Size
+			}
+			positions = append(positions, protocol.ClanMemberPos{
+				X:    cx,
+				Y:    cy,
+				Size: totalSize,
+				Skin: om.player.Skin,
+				Name: om.player.Name,
+			})
+		}
+
+		// Send to each online clan member
+		for _, om := range onlineMembers {
+			msg := protocol.BuildClanPositions(om.ci.client.shuffle, positions)
+			om.ci.client.sendMsg(msg)
+		}
+	}
+}
+
+// BroadcastBattleRoyale sends the BR zone state to all connected clients.
+func (s *Server) BroadcastBattleRoyale() {
+	if s.BattleRoyale == nil {
+		return
+	}
+
+	info := s.BattleRoyale.GetInfo()
+	// Only broadcast when BR is active (not inactive)
+	if info.State == 0 {
+		return
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	for client := range s.clients {
+		if client.shuffle == nil {
+			continue
+		}
+		msg := protocol.BuildBattleRoyale(client.shuffle,
+			byte(info.State), info.PlayersAlive, info.Countdown,
+			info.TimeRemaining, info.ZoneCX, info.ZoneCY, info.ZoneRadius,
+			info.WinnerName)
+		client.sendMsg(msg)
+	}
+}
+
+// TickBattleRoyale runs the BR tick and broadcasts updates.
+func (s *Server) TickBattleRoyale() {
+	if s.BattleRoyale == nil {
+		return
+	}
+
+	// Get players from the engine
+	s.Engine.RLock()
+	players := s.Engine.Players()
+	s.Engine.RUnlock()
+
+	s.BattleRoyale.Tick(players)
 }
 
 // KickUserSub disconnects all clients associated with a user sub.

@@ -36,6 +36,9 @@ type Player struct {
 	LockedDirX      float64 // normalized
 	LockedDirY      float64 // normalized
 
+	// Freeze position: when frozen, cells don't move at all (X key)
+	Frozen bool
+
 	// State
 	Alive     bool
 	Score     float64 // total mass
@@ -190,6 +193,14 @@ func (p *Player) SetDirectionLock(lock bool) {
 	} else if !lock {
 		p.DirectionLocked = false
 	}
+}
+
+// SetFrozen freezes or unfreezes the player's cell positions.
+// When frozen, cells stop all movement (mouse-tracking is skipped).
+func (p *Player) SetFrozen(freeze bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.Frozen = freeze
 }
 
 // ConsumeSplit consumes one split from the queue. Returns true if there was one.

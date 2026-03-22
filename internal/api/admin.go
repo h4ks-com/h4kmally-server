@@ -640,3 +640,85 @@ func GetPremiumSkinNames() []string {
 	}
 	return names
 }
+
+// HandleAdminBRStart starts a Battle Royale event.
+// POST /api/admin/br/start
+func (ah *AdminHandler) HandleAdminBRStart(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	br := ah.server.BattleRoyale
+	if br == nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"battle royale not initialized"}`))
+		return
+	}
+
+	mapHalfW := ah.server.Engine.Cfg.MapWidth
+	br.Start(mapHalfW)
+	w.Write([]byte(`{"status":"started"}`))
+}
+
+// HandleAdminBRStop stops the current Battle Royale event.
+// POST /api/admin/br/stop
+func (ah *AdminHandler) HandleAdminBRStop(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	br := ah.server.BattleRoyale
+	if br == nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"battle royale not initialized"}`))
+		return
+	}
+
+	br.Stop()
+	w.Write([]byte(`{"status":"stopped"}`))
+}
+
+// HandleAdminBRStatus returns the current Battle Royale status.
+// GET /api/admin/br/status
+func (ah *AdminHandler) HandleAdminBRStatus(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+
+	br := ah.server.BattleRoyale
+	if br == nil {
+		w.Write([]byte(`{"state":0}`))
+		return
+	}
+
+	info := br.GetInfo()
+	json.NewEncoder(w).Encode(info)
+}

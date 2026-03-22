@@ -73,6 +73,13 @@ func main() {
 	engine := game.NewEngine(cfg)
 	server := api.NewServer(engine)
 
+	// Initialize Battle Royale
+	br := game.NewBattleRoyale()
+	br.BroadcastFn = func(msg string) {
+		server.BroadcastSystemChat(msg)
+	}
+	server.BattleRoyale = br
+
 	// Start server-side bots
 	var botMgr *game.BotManager
 	if botCount > 0 {
@@ -149,6 +156,9 @@ func main() {
 	mux.HandleFunc("/api/admin/upload-skin", adminHandler.HandleAdminUploadSkin)
 	mux.HandleFunc("/api/admin/delete-skin", adminHandler.HandleAdminDeleteSkin)
 	mux.HandleFunc("/api/admin/set-skin-level", adminHandler.HandleAdminSetSkinLevel)
+	mux.HandleFunc("/api/admin/br/start", adminHandler.HandleAdminBRStart)
+	mux.HandleFunc("/api/admin/br/stop", adminHandler.HandleAdminBRStop)
+	mux.HandleFunc("/api/admin/br/status", adminHandler.HandleAdminBRStatus)
 
 	// Skins API: manifest + access-checked list + image serving
 	mux.HandleFunc("/api/skins", api.HandleSkinsList)
@@ -159,6 +169,33 @@ func main() {
 
 	// Public API
 	mux.HandleFunc("/api/status", server.HandleStatus)
+
+	// Clan system
+	clanStore := api.NewClanStore("data/clans.json")
+	var clanPayment api.PaymentProvider
+	if shopHandler != nil {
+		clanPayment = api.NewBeansProvider(beansSite, beansToken, beansMerchant)
+	}
+	clanHandler := api.NewClanHandler(authMgr, userStore, clanStore, clanPayment)
+	// Wire clan chat broadcast: forward to all online clan members via WebSocket
+	clanHandler.SetClanChatFn(func(clanID, senderName, senderSub, text string) {
+		server.BroadcastClanChat(clanID, senderName, text)
+	})
+	server.ClanStore = clanStore
+	mux.HandleFunc("/api/clans", clanHandler.HandleListClans)
+	mux.HandleFunc("/api/clans/my", clanHandler.HandleMyClan)
+	mux.HandleFunc("/api/clans/detail", clanHandler.HandleClanDetail)
+	mux.HandleFunc("/api/clans/create", clanHandler.HandleCreateClan)
+	mux.HandleFunc("/api/clans/create-confirm", clanHandler.HandleCreateClanConfirm)
+	mux.HandleFunc("/api/clans/join", clanHandler.HandleJoinRequest)
+	mux.HandleFunc("/api/clans/accept", clanHandler.HandleAcceptRequest)
+	mux.HandleFunc("/api/clans/reject", clanHandler.HandleRejectRequest)
+	mux.HandleFunc("/api/clans/kick", clanHandler.HandleKickMember)
+	mux.HandleFunc("/api/clans/set-role", clanHandler.HandleSetRole)
+	mux.HandleFunc("/api/clans/settings", clanHandler.HandleUpdateSettings)
+	mux.HandleFunc("/api/clans/leave", clanHandler.HandleLeaveClan)
+	mux.HandleFunc("/api/clans/chat", clanHandler.HandleClanChat)
+	log.Println("Clan system enabled")
 
 	// Chat bridge (optional — enabled when CHAT_BRIDGE_TOKEN is set)
 	chatToken := os.Getenv("CHAT_BRIDGE_TOKEN")
@@ -194,18 +231,36 @@ func main() {
 
 		lastLB := time.Now()
 		lastSave := time.Now()
+		lastClanPos := time.Now()
+		lastBRBroadcast := time.Now()
 
 		for range ticker.C {
 			updated, eaten, removed, tickNum := engine.Tick()
 			if botMgr != nil {
 				botMgr.Tick()
 			}
+
+			// Battle Royale tick (every game tick)
+			server.TickBattleRoyale()
+
 			server.Broadcast(updated, eaten, removed, tickNum)
 
 			// Broadcast leaderboard periodically
 			if time.Since(lastLB) >= cfg.LeaderboardRate {
 				server.BroadcastLeaderboard(engine.Leaderboard)
 				lastLB = time.Now()
+			}
+
+			// Broadcast clan member positions (~4 ticks = 160ms)
+			if time.Since(lastClanPos) >= 160*time.Millisecond {
+				server.BroadcastClanPositions()
+				lastClanPos = time.Now()
+			}
+
+			// Broadcast battle royale zone updates (~5 Hz = 200ms)
+			if time.Since(lastBRBroadcast) >= 200*time.Millisecond {
+				server.BroadcastBattleRoyale()
+				lastBRBroadcast = time.Now()
 			}
 
 			// Persist user data periodically (every 5 seconds) — in background goroutine

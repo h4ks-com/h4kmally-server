@@ -89,13 +89,13 @@ func (rl *rateLimiter) cleanup() {
 var statusLimiter = newRateLimiter(30, time.Minute)
 
 type StatusPlayerEntry struct {
-	Name      string `json:"name"`
-	Skin      string `json:"skin,omitempty"`
-	Effect    string `json:"effect,omitempty"`
-	Score     int    `json:"score"`
-	Cells     int    `json:"cells"`
-	IsBot     bool   `json:"isBot"`
-	Clan      string `json:"clan,omitempty"`
+	Name   string `json:"name"`
+	Skin   string `json:"skin,omitempty"`
+	Effect string `json:"effect,omitempty"`
+	Score  int    `json:"score"`
+	Cells  int    `json:"cells"`
+	IsBot  bool   `json:"isBot"`
+	Clan   string `json:"clan,omitempty"`
 }
 
 type StatusResponse struct {

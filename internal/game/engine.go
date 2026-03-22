@@ -350,6 +350,17 @@ func (e *Engine) AllCells() []*Cell {
 	return result
 }
 
+// RLock acquires a read lock on the engine (for external reads like BR).
+func (e *Engine) RLock() { e.mu.RLock() }
+
+// RUnlock releases the read lock.
+func (e *Engine) RUnlock() { e.mu.RUnlock() }
+
+// Players returns the player map. Must be called under RLock.
+func (e *Engine) Players() map[uint32]*Player {
+	return e.players
+}
+
 func (e *Engine) spawnFood() {
 	toSpawn := e.Cfg.FoodCount - e.foodCount
 	if toSpawn <= 0 {
@@ -383,9 +394,14 @@ func (e *Engine) processPlayerSplit(p *Player) {
 		return
 	}
 
-	// Split each cell that's large enough (snapshot current cells)
+	// Split each cell that's large enough (snapshot current cells).
+	// Sort largest first so that when near max cells, the biggest cells
+	// get priority to split (matching expected gameplay behavior).
 	snapshot := make([]*Cell, len(p.Cells))
 	copy(snapshot, p.Cells)
+	sort.Slice(snapshot, func(i, j int) bool {
+		return snapshot[i].Size > snapshot[j].Size
+	})
 
 	for _, c := range snapshot {
 		if len(p.Cells) >= e.Cfg.MaxCells {
@@ -523,6 +539,7 @@ func (e *Engine) moveMovableCells() {
 		if c.Type == CellPlayer && c.Owner != nil {
 			p := c.Owner
 			p.mu.Lock()
+			frozen := p.Frozen
 			var mx, my float64
 			if p.DirectionLocked {
 				// Move along locked direction: project far ahead from cell center
@@ -533,18 +550,21 @@ func (e *Engine) moveMovableCells() {
 			}
 			p.mu.Unlock()
 
-			dx := mx - c.X
-			dy := my - c.Y
-			dist := math.Sqrt(dx*dx + dy*dy)
+			// Frozen players don't move toward mouse at all
+			if !frozen {
+				dx := mx - c.X
+				dy := my - c.Y
+				dist := math.Sqrt(dx*dx + dy*dy)
 
-			if dist > 1 {
-				speed := SpeedForSize(c.Size) * e.Cfg.MoveSpeed * 40 // scale for tick interval
-				if speed > dist {
-					speed = dist
+				if dist > 1 {
+					speed := SpeedForSize(c.Size) * e.Cfg.MoveSpeed * 40 // scale for tick interval
+					if speed > dist {
+						speed = dist
+					}
+					c.X += (dx / dist) * speed
+					c.Y += (dy / dist) * speed
+					moved = true
 				}
-				c.X += (dx / dist) * speed
-				c.Y += (dy / dist) * speed
-				moved = true
 			}
 		}
 
@@ -797,29 +817,43 @@ func (e *Engine) virusPop(player *Cell, virus *Cell) {
 		return
 	}
 
-	// Virus pop: split the hit cell into exactly 2 pieces
-	// Absorb virus mass, then split in half
-	totalMass := player.Mass() + virus.Mass()
-	newSize := math.Sqrt(totalMass / 2.0 * 100)
-
-	player.Size = newSize
+	// OgarII virus pop: absorb virus mass, then repeatedly halve the cell
+	// up to VirusSplit times (capped by MaxCells).
+	player.Size = math.Sqrt((player.Mass() + virus.Mass()) * 100)
 	e.updated = append(e.updated, player)
 
-	// Child ejects in a random direction (virus explosion)
-	angle := rand.Float64() * 2 * math.Pi
-	nx := math.Cos(angle)
-	ny := math.Sin(angle)
+	splits := e.Cfg.VirusSplit
+	available := e.Cfg.MaxCells - len(p.Cells)
+	if splits > available {
+		splits = available
+	}
 
-	child := NewPlayerCell(p, player.X+nx*newSize, player.Y+ny*newSize, newSize)
-	// Virus pop boost: same split speed as normal split (Ogar-style constant)
-	child.VX = nx * SplitBoostV0
-	child.VY = ny * SplitBoostV0
-	child.MergeAt = int64(e.tickNum) + int64(e.Cfg.MergeDelay/e.Cfg.TickRate)*2
-	child.NoPushTicks = 15
+	mergeAt := int64(e.tickNum) + int64(e.Cfg.MergeDelay/e.Cfg.TickRate)*2
+
+	for i := 0; i < splits; i++ {
+		// Halve parent mass each iteration
+		curMass := player.Mass()
+		halfSize := math.Sqrt(curMass / 2.0 * 100)
+		if halfSize < e.Cfg.MinSplitSize {
+			break
+		}
+		player.Size = halfSize
+
+		// Each child flies off in a random direction
+		angle := rand.Float64() * 2 * math.Pi
+		nx := math.Cos(angle)
+		ny := math.Sin(angle)
+
+		child := NewPlayerCell(p, player.X+nx*halfSize, player.Y+ny*halfSize, halfSize)
+		child.VX = nx * SplitBoostV0
+		child.VY = ny * SplitBoostV0
+		child.MergeAt = mergeAt
+		child.NoPushTicks = 15
+
+		e.addCell(child)
+		p.Cells = append(p.Cells, child)
+	}
 	player.NoPushTicks = 15
-
-	e.addCell(child)
-	p.Cells = append(p.Cells, child)
 }
 
 func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
@@ -829,8 +863,8 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 	child := NewVirus(e.Cfg)
 	child.X = v.X
 	child.Y = v.Y
-	// Virus split travels a fixed distance
-	const virusSplitV0 = 600.0 * BoostDecayRate
+	// Virus split travels ~780 units (OgarII virusSplitBoost = 780)
+	const virusSplitV0 = 780.0 * BoostDecayRate
 	child.VX = math.Cos(angle) * virusSplitV0
 	child.VY = math.Sin(angle) * virusSplitV0
 	e.addCell(child)
