@@ -83,7 +83,7 @@ func main() {
 	// Start server-side bots
 	var botMgr *game.BotManager
 	if botCount > 0 {
-		botMgr = game.NewBotManager(engine, botCount)
+		botMgr = game.NewBotManager(engine, botCount, br)
 	}
 
 	// Initialize auth (Logto OAuth2)

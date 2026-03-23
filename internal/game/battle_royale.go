@@ -11,9 +11,11 @@ import (
 // States: Inactive → Countdown → Active → Finished
 //
 // Admin triggers via API → starts Countdown (10s).
-// Active: zone shrinks from full map to a point over the configured duration.
-// Players outside the zone lose mass every tick.
-// When only 1 player (or 0) remains alive, the round finishes.
+// Active: zone shrinks from full map to a point over the configured duration,
+// then continues collapsing to zero in a 30-second sudden death.
+// Player cells outside the zone take damage each tick;
+// when all cells of a player reach kill threshold, the player is eliminated.
+// Last player standing wins.
 
 // BRState represents the battle royale game phase.
 type BRState int
@@ -24,6 +26,9 @@ const (
 	BRActive                   // Zone is shrinking, damage is active
 	BRFinished                 // Round ended, showing results
 )
+
+// BRKillThreshold is the minimum cell size before a cell is considered dead from zone damage.
+const BRKillThreshold = 20.0
 
 // BattleRoyale manages the BR event state.
 type BattleRoyale struct {
@@ -38,21 +43,28 @@ type BattleRoyale struct {
 	CountdownSecs  int // seconds of countdown (default 10)
 
 	// Zone configuration
-	ZoneDuration  time.Duration // how long the zone takes to fully shrink (default 5 min)
+	ZoneDuration  time.Duration // how long the zone takes to reach FinalRadius (default 5 min)
 	InitialX      float64       // center of initial zone (map center)
 	InitialY      float64
 	InitialRadius float64 // starting radius (half map diagonal)
-	FinalRadius   float64 // ending radius (tiny circle)
+	FinalRadius   float64 // ending radius at end of ZoneDuration
 	FinalX        float64 // final center (can drift toward random point)
 	FinalY        float64
 
+	// Sudden death: after ZoneDuration, zone keeps shrinking to 0 over this period
+	SuddenDeathDuration time.Duration
+
 	// Damage
-	DamagePerTick float64 // mass lost per tick when outside zone
+	DamagePerTick float64 // size units lost per tick when outside zone
 
 	// Tracking
 	PlayersAlive int
 	WinnerName   string
 	WinnerID     uint32
+
+	// Placement tracking: maps player ID → placement (1st, 2nd, 3rd...)
+	Placements map[uint32]int
+	nextPlace  int // next placement to assign (counts down: N, N-1, ... 1)
 
 	// Callback for broadcasting messages
 	BroadcastFn func(msg string)
@@ -61,11 +73,13 @@ type BattleRoyale struct {
 // NewBattleRoyale creates a new inactive BR instance.
 func NewBattleRoyale() *BattleRoyale {
 	return &BattleRoyale{
-		State:         BRInactive,
-		CountdownSecs: 10,
-		ZoneDuration:  5 * time.Minute,
-		DamagePerTick: 2.0, // mass units per tick (25Hz = 50 mass/sec)
-		FinalRadius:   200,
+		State:               BRInactive,
+		CountdownSecs:       10,
+		ZoneDuration:        5 * time.Minute,
+		SuddenDeathDuration: 30 * time.Second,
+		DamagePerTick:       1.5,       // size units per tick (25Hz → ~37.5 size/sec)
+		FinalRadius:         200,
+		Placements:          make(map[uint32]int),
 	}
 }
 
@@ -83,6 +97,8 @@ func (br *BattleRoyale) Start(mapHalfW float64) {
 	br.WinnerName = ""
 	br.WinnerID = 0
 	br.EndTime = time.Time{}
+	br.Placements = make(map[uint32]int)
+	br.nextPlace = 0 // will be set when active phase begins
 
 	// Zone starts as full map (circle inscribing the square map)
 	br.InitialX = 0
@@ -104,9 +120,23 @@ func (br *BattleRoyale) Stop() {
 	br.WinnerName = ""
 }
 
-// Tick processes one BR game tick. Called from the engine's tick loop.
-// Returns: outsidePlayers (player IDs outside zone to apply damage to)
-func (br *BattleRoyale) Tick(players map[uint32]*Player) {
+// IsActive returns true if BR is in countdown or active state (no spawning allowed).
+func (br *BattleRoyale) IsActive() bool {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.State == BRCountdown || br.State == BRActive
+}
+
+// GetPlacement returns the placement for a player (0 if not eliminated yet).
+func (br *BattleRoyale) GetPlacement(playerID uint32) int {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.Placements[playerID]
+}
+
+// Tick processes one BR game tick. Called from the game loop.
+// Returns a list of player IDs that should be killed (all cells removed) this tick.
+func (br *BattleRoyale) Tick(players map[uint32]*Player) []uint32 {
 	br.mu.Lock()
 	defer br.mu.Unlock()
 
@@ -118,6 +148,17 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) {
 			// Start active phase
 			br.State = BRActive
 			br.StartTime = time.Now()
+
+			// Count initial alive players for placement tracking
+			alive := 0
+			for _, p := range players {
+				if p.Alive && len(p.Cells) > 0 {
+					alive++
+				}
+			}
+			br.nextPlace = alive
+			br.PlayersAlive = alive
+
 			if br.BroadcastFn != nil {
 				br.BroadcastFn("[BR] Battle Royale has begun! Stay inside the zone!")
 			}
@@ -127,15 +168,69 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) {
 				br.BroadcastFn("[BR] Starting in " + itoa(remaining) + "...")
 			}
 		}
+		return nil
 
 	case BRActive:
-		// Count alive players
-		alive := 0
-		var lastAlivePlayer *Player
+		// Get current zone
+		cx, cy, radius := br.currentZone()
+
+		// Apply zone damage and collect kills
+		var kills []uint32
 		for _, p := range players {
-			if p.Alive && len(p.Cells) > 0 {
+			if !p.Alive || len(p.Cells) == 0 {
+				continue
+			}
+
+			allBelowThreshold := true
+			for _, c := range p.Cells {
+				dx := c.X - cx
+				dy := c.Y - cy
+				dist := math.Sqrt(dx*dx + dy*dy)
+				if dist+c.Size > radius {
+					// Cell is at least partially outside zone — apply damage
+					// Damage scales with how far outside the zone the cell is
+					overshoot := (dist + c.Size) - radius
+					dmgScale := 1.0 + overshoot/(radius*0.5+1)
+					if dmgScale > 3.0 {
+						dmgScale = 3.0
+					}
+					c.Size -= br.DamagePerTick * dmgScale
+				}
+				if c.Size > BRKillThreshold {
+					allBelowThreshold = false
+				}
+			}
+
+			// If ALL cells are below kill threshold, this player is eliminated
+			if allBelowThreshold {
+				kills = append(kills, p.ID)
+				if br.nextPlace > 0 {
+					br.Placements[p.ID] = br.nextPlace
+					br.nextPlace--
+				}
+				if br.BroadcastFn != nil {
+					place := br.Placements[p.ID]
+					br.BroadcastFn("[BR] " + p.Name + " eliminated! (#" + itoa(place) + ")")
+				}
+			}
+		}
+
+		// Recount alive players (subtract kills that are about to happen)
+		alive := 0
+		for _, p := range players {
+			if !p.Alive || len(p.Cells) == 0 {
+				continue
+			}
+			// Check if this player is in the kill list
+			killed := false
+			for _, kid := range kills {
+				if kid == p.ID {
+					killed = true
+					break
+				}
+			}
+			if !killed {
 				alive++
-				lastAlivePlayer = p
 			}
 		}
 		br.PlayersAlive = alive
@@ -144,40 +239,37 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) {
 		if alive <= 1 {
 			br.State = BRFinished
 			br.EndTime = time.Now()
-			if alive == 1 && lastAlivePlayer != nil {
-				br.WinnerName = lastAlivePlayer.Name
-				br.WinnerID = lastAlivePlayer.ID
-				if br.BroadcastFn != nil {
-					br.BroadcastFn("[BR] " + lastAlivePlayer.Name + " wins the Battle Royale!")
+			if alive == 1 {
+				// Find the winner
+				for _, p := range players {
+					if !p.Alive || len(p.Cells) == 0 {
+						continue
+					}
+					killed := false
+					for _, kid := range kills {
+						if kid == p.ID {
+							killed = true
+							break
+						}
+					}
+					if !killed {
+						br.WinnerName = p.Name
+						br.WinnerID = p.ID
+						br.Placements[p.ID] = 1
+						if br.BroadcastFn != nil {
+							br.BroadcastFn("[BR] " + p.Name + " wins the Battle Royale! \xF0\x9F\x8F\x86")
+						}
+						break
+					}
 				}
 			} else {
 				if br.BroadcastFn != nil {
 					br.BroadcastFn("[BR] Battle Royale ended — no survivors!")
 				}
 			}
-			return
 		}
 
-		// Apply zone damage
-		cx, cy, radius := br.currentZone()
-		for _, p := range players {
-			if !p.Alive || len(p.Cells) == 0 {
-				continue
-			}
-			// Check if ANY of the player's cells are outside the zone
-			for _, c := range p.Cells {
-				dx := c.X - cx
-				dy := c.Y - cy
-				dist := math.Sqrt(dx*dx + dy*dy)
-				if dist > radius {
-					// Apply damage: shrink the cell
-					c.Size -= br.DamagePerTick
-					if c.Size < 10 {
-						c.Size = 10 // minimum size before engine removes
-					}
-				}
-			}
-		}
+		return kills
 
 	case BRFinished:
 		// Auto-reset after 15 seconds
@@ -187,7 +279,10 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) {
 				br.BroadcastFn("[BR] Battle Royale has ended.")
 			}
 		}
+		return nil
 	}
+
+	return nil
 }
 
 // GetZone returns the current zone center and radius. Thread-safe.
@@ -230,11 +325,18 @@ func (br *BattleRoyale) GetInfo() BRInfo {
 		info.ZoneCY = cy
 		info.ZoneRadius = radius
 		elapsed := time.Since(br.StartTime)
-		remaining := br.ZoneDuration - elapsed
-		if remaining < 0 {
-			remaining = 0
+		if elapsed < br.ZoneDuration {
+			remaining := br.ZoneDuration - elapsed
+			info.TimeRemaining = int(remaining.Seconds())
+		} else {
+			// Sudden death phase — show remaining SD time (negative = overtime indicator)
+			overtime := elapsed - br.ZoneDuration
+			sdRemaining := br.SuddenDeathDuration - overtime
+			if sdRemaining < 0 {
+				sdRemaining = 0
+			}
+			info.TimeRemaining = -int(sdRemaining.Seconds()) - 1 // negative = sudden death
 		}
-		info.TimeRemaining = int(remaining.Seconds())
 	}
 
 	return info
@@ -253,9 +355,11 @@ type BRInfo struct {
 }
 
 // currentZone calculates current zone position and radius (must be called under lock).
+// After ZoneDuration, the zone enters sudden death and continues shrinking to zero.
 func (br *BattleRoyale) currentZone() (cx, cy, radius float64) {
 	elapsed := time.Since(br.StartTime)
-	progress := elapsed.Seconds() / br.ZoneDuration.Seconds()
+	mainDur := br.ZoneDuration.Seconds()
+	progress := elapsed.Seconds() / mainDur
 	if progress > 1 {
 		progress = 1
 	}
@@ -267,8 +371,22 @@ func (br *BattleRoyale) currentZone() (cx, cy, radius float64) {
 	cx = br.InitialX + (br.FinalX-br.InitialX)*t
 	cy = br.InitialY + (br.FinalY-br.InitialY)*t
 
-	// Linearly interpolate radius
+	// Linearly interpolate radius during main phase
 	radius = br.InitialRadius + (br.FinalRadius-br.InitialRadius)*t
+
+	// Sudden death: after main duration, keep shrinking from FinalRadius → 0
+	if elapsed > br.ZoneDuration {
+		overtime := elapsed - br.ZoneDuration
+		sdProgress := overtime.Seconds() / br.SuddenDeathDuration.Seconds()
+		if sdProgress > 1 {
+			sdProgress = 1
+		}
+		radius = br.FinalRadius * (1 - sdProgress)
+		// Center stays at final position during sudden death
+		cx = br.FinalX
+		cy = br.FinalY
+	}
+
 	return
 }
 

@@ -149,6 +149,31 @@ func (e *Engine) QueueRemovePlayer(id uint32) {
 	e.mu.Unlock()
 }
 
+// KillPlayersForBR removes the given players (all cells) under the engine lock.
+// Used by Battle Royale to eliminate players whose cells fell below the kill threshold.
+// Unlike QueueRemovePlayer, this does NOT delete the player from e.players — the
+// player stays in the map (with Alive=false) so BR and leaderboard can still see them.
+func (e *Engine) KillPlayersForBR(ids []uint32) {
+	if len(ids) == 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	for _, id := range ids {
+		p, ok := e.players[id]
+		if !ok || !p.Alive {
+			continue
+		}
+		for _, c := range p.Cells {
+			e.Grid.Remove(c)
+			e.removed = append(e.removed, c.ID)
+			delete(e.cells, c.ID)
+		}
+		p.Cells = nil
+		p.Alive = false
+	}
+}
+
 // SpawnPlayer spawns a player into the world with one cell.
 func (e *Engine) SpawnPlayer(p *Player) {
 	e.mu.Lock()

@@ -257,3 +257,48 @@ func (b *Bot) Decide(engine *Engine) {
 		b.splitCooldown = 15 // 15 ticks cooldown (~600ms at 25Hz)
 	}
 }
+
+// DecideBR runs zone-aware AI. Bots strongly prioritize staying inside the zone.
+func (b *Bot) DecideBR(engine *Engine, zoneCX, zoneCY, zoneRadius float64) {
+	p := b.Player
+	if !p.Alive || len(p.Cells) == 0 {
+		return
+	}
+
+	cx, cy := p.Center()
+
+	// Check distance from zone center
+	dx := cx - zoneCX
+	dy := cy - zoneCY
+	dist := math.Sqrt(dx*dx + dy*dy)
+
+	// If we're outside or near the edge of the zone, move toward center urgently
+	margin := zoneRadius * 0.3 // start heading inward when within 30% of the edge
+	if dist > zoneRadius-margin {
+		// Move toward zone center — override all other AI
+		p.SetMouse(zoneCX, zoneCY)
+		return
+	}
+
+	// Inside the safe zone — run normal AI but add a zone-center pull
+	// to prevent drifting toward the edge
+	b.Decide(engine)
+
+	// After normal AI, bias the mouse target toward the zone center
+	// The further from center, the stronger the bias
+	p.mu.Lock()
+	mouseX, mouseY := p.MouseX, p.MouseY
+	p.mu.Unlock()
+
+	zonePull := dist / zoneRadius // 0 at center, ~0.7+ near edge
+	if zonePull > 0.4 {
+		// Blend the mouse target toward zone center
+		blend := (zonePull - 0.4) * 1.5 // 0 → 0.9
+		if blend > 0.8 {
+			blend = 0.8
+		}
+		mouseX = mouseX*(1-blend) + zoneCX*blend
+		mouseY = mouseY*(1-blend) + zoneCY*blend
+		p.SetMouse(mouseX, mouseY)
+	}
+}

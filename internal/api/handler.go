@@ -288,6 +288,13 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 			return
 		}
 
+		// Block spawning during an active Battle Royale (countdown or active).
+		// Once you die in BR, you stay dead until the round ends.
+		if c.server.BattleRoyale != nil && c.server.BattleRoyale.IsActive() {
+			c.sendMsg(protocol.BuildSpawnResult(c.shuffle, false))
+			return
+		}
+
 		// Validate skin access server-side
 		validatedSkin := c.validateSkinAccess(sp.Skin)
 		validatedEffect := c.validateEffect(sp.Effect)
@@ -1371,12 +1378,16 @@ func (s *Server) TickBattleRoyale() {
 		return
 	}
 
-	// Get players from the engine
+	// Get players from the engine (read lock for the map reference)
 	s.Engine.RLock()
 	players := s.Engine.Players()
 	s.Engine.RUnlock()
 
-	s.BattleRoyale.Tick(players)
+	// BR tick returns a list of player IDs to kill this tick
+	kills := s.BattleRoyale.Tick(players)
+
+	// Remove killed players' cells from the engine (acquires write lock)
+	s.Engine.KillPlayersForBR(kills)
 }
 
 // KickUserSub disconnects all clients associated with a user sub.
