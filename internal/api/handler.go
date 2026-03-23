@@ -338,6 +338,19 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 			c.player.Effect = validatedEffect
 		}
 
+		// Look up clan tag for authenticated users
+		if c.userSub != "" && c.server.AuthMgr != nil && c.server.ClanStore != nil {
+			if user := c.server.AuthMgr.UserStore.Get(c.userSub); user != nil && user.ClanID != "" {
+				if clan := c.server.ClanStore.GetClan(user.ClanID); clan != nil {
+					c.player.Clan = clan.Tag
+				} else {
+					c.player.Clan = ""
+				}
+			} else {
+				c.player.Clan = ""
+			}
+		}
+
 		c.engine.SpawnPlayer(c.player)
 
 		// If multibox is enabled and the multi player is alive, teleport
@@ -1483,6 +1496,7 @@ var premiumEffects = map[string]bool{
 	"flame":       true,
 	"glitch":      true,
 	"blackhole":   true,
+	"trail":       true,
 }
 
 // GetPremiumEffectNames returns the list of premium effect IDs.
@@ -1747,6 +1761,7 @@ var effectsManifest = []struct {
 	{"flame", "Flame", "Rising fire particles around your cell", "premium"},
 	{"glitch", "Glitch", "Digital distortion and RGB shift effect", "premium"},
 	{"blackhole", "Black Hole", "Dark gravity well with warped accretion rings", "premium"},
+	{"trail", "Trail", "Smooth ribbon trail following your cell", "premium"},
 }
 
 // HandleEffectsAccess returns all effects with per-user access info.

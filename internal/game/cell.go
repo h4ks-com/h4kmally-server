@@ -178,6 +178,7 @@ func NewPlayerCell(owner *Player, x, y, size float64) *Cell {
 		Name:         owner.Name,
 		Skin:         owner.Skin,
 		Effect:       owner.Effect,
+		Clan:         owner.Clan,
 		IsPlayer:     true,
 		IsSubscriber: owner.IsSubscriber,
 		Owner:        owner,
