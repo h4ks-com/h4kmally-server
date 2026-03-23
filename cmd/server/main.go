@@ -233,6 +233,7 @@ func main() {
 		lastSave := time.Now()
 		lastClanPos := time.Now()
 		lastBRBroadcast := time.Now()
+		lastInactiveCheck := time.Now()
 
 		for range ticker.C {
 			updated, eaten, removed, tickNum := engine.Tick()
@@ -268,6 +269,13 @@ func main() {
 			if time.Since(lastSave) >= 5*time.Second {
 				go server.SaveUserPoints()
 				lastSave = time.Now()
+			}
+
+			// Disconnect clients that haven't sent any message/pong in 10 seconds.
+			// Prevents ghost cells from silently-dead connections.
+			if time.Since(lastInactiveCheck) >= 2*time.Second {
+				server.CheckInactiveClients()
+				lastInactiveCheck = time.Now()
 			}
 		}
 	}()

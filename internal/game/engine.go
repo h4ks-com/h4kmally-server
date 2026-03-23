@@ -154,6 +154,17 @@ func (e *Engine) SpawnPlayer(p *Player) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
+	// Clean up any existing cells to prevent orphans.
+	// This handles the case where a client sends Spawn while still alive
+	// (e.g. rapid respawn from external bots). Without this, the old cells
+	// remain in e.cells and the grid but are no longer tracked by p.Cells,
+	// so removePlayerLocked never cleans them up → permanent ghost cells.
+	for _, c := range p.Cells {
+		e.Grid.Remove(c)
+		e.removed = append(e.removed, c.ID)
+		delete(e.cells, c.ID)
+	}
+
 	// Find a safe spawn position (away from large cells)
 	x, y := e.findSpawnPos()
 
@@ -171,6 +182,13 @@ func (e *Engine) SpawnPlayer(p *Player) {
 func (e *Engine) SpawnPlayerNear(p *Player, nearX, nearY, offset float64) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+
+	// Clean up existing cells (same orphan prevention as SpawnPlayer).
+	for _, c := range p.Cells {
+		e.Grid.Remove(c)
+		e.removed = append(e.removed, c.ID)
+		delete(e.cells, c.ID)
+	}
 
 	angle := rand.Float64() * 2 * math.Pi
 	x := nearX + math.Cos(angle)*offset

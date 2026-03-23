@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"runtime"
 	"sync"
+	sync_atomic "sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -73,6 +74,11 @@ type Client struct {
 	knownMultiCells map[uint32]bool // cell IDs for which we've sent AddMultiCell
 	multiRespawn    int64           // unix time to auto-respawn multi (0 = not pending)
 	primaryRespawn  int64           // unix time to auto-respawn primary (0 = not pending)
+
+	// Inactivity tracking: last time any message was received from this client.
+	// Accessed atomically (unix nanoseconds). If no activity for 10s, the
+	// server force-disconnects the client to prevent ghost cells.
+	lastActivity int64 // atomic: time.Now().UnixNano()
 }
 
 // Server manages all connected clients and the game engine.
@@ -151,6 +157,7 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		knownMyCells: make(map[uint32]bool, 16),
 		userSub:      userSub,
 		remoteIP:     remoteIP,
+		lastActivity: time.Now().UnixNano(),
 	}
 
 	// One connection per account: kick any existing connection from the
@@ -208,6 +215,7 @@ func (c *Client) handleConnection() {
 	c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
 	c.conn.SetPongHandler(func(string) error {
 		c.conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		sync_atomic.StoreInt64(&c.lastActivity, time.Now().UnixNano())
 		return nil
 	})
 
@@ -251,6 +259,9 @@ func (c *Client) handleConnection() {
 		if err != nil {
 			return
 		}
+
+		// Track last activity for inactivity failsafe.
+		sync_atomic.StoreInt64(&c.lastActivity, time.Now().UnixNano())
 
 		parsed := protocol.ParseClientMessage(c.shuffle, raw)
 		if parsed == nil {
@@ -635,6 +646,32 @@ func (c *Client) writePump() {
 				return
 			}
 		}
+	}
+}
+
+// CheckInactiveClients scans all connected clients and force-disconnects any
+// that have not sent a message (or pong) in the last 10 seconds. This prevents
+// ghost cells from lingering when a connection goes silently dead.
+func (s *Server) CheckInactiveClients() {
+	cutoff := time.Now().Add(-10 * time.Second).UnixNano()
+
+	s.mu.RLock()
+	var stale []*Client
+	for c := range s.clients {
+		last := sync_atomic.LoadInt64(&c.lastActivity)
+		if last > 0 && last < cutoff {
+			stale = append(stale, c)
+		}
+	}
+	s.mu.RUnlock()
+
+	for _, c := range stale {
+		name := "unknown"
+		if c.player != nil {
+			name = c.player.Name
+		}
+		log.Printf("Inactivity timeout (10s): disconnecting client %q from %s", name, c.remoteIP)
+		c.conn.Close()
 	}
 }
 
