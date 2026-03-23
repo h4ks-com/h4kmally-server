@@ -1862,9 +1862,10 @@ func (s *Server) HandleTopUsers(w http.ResponseWriter, r *http.Request) {
 
 	// Filter out users with no points and sort by points descending
 	type topEntry struct {
-		Name   string `json:"name"`
-		Points int64  `json:"points"`
-		Level  int    `json:"level"`
+		Name     string `json:"name"`
+		Points   int64  `json:"points"`
+		Level    int    `json:"level"`
+		TopScore int64  `json:"topScore"`
 	}
 
 	entries := make([]topEntry, 0, len(allUsers))
@@ -1881,9 +1882,10 @@ func (s *Server) HandleTopUsers(w http.ResponseWriter, r *http.Request) {
 			name = "unnamed"
 		}
 		entries = append(entries, topEntry{
-			Name:   name,
-			Points: u.Points,
-			Level:  LevelFromPoints(u.Points),
+			Name:     name,
+			Points:   u.Points,
+			Level:    LevelFromPoints(u.Points),
+			TopScore: u.TopScore,
 		})
 	}
 
