@@ -697,6 +697,7 @@ func (ah *AdminHandler) HandleAdminBRStop(w http.ResponseWriter, r *http.Request
 	}
 
 	br.Stop()
+	ah.server.BroadcastBattleRoyale() // send state=0 to clear clients
 	w.Write([]byte(`{"status":"stopped"}`))
 }
 

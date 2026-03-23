@@ -183,6 +183,9 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) {
 		// Auto-reset after 15 seconds
 		if time.Since(br.EndTime) > 15*time.Second {
 			br.State = BRInactive
+			if br.BroadcastFn != nil {
+				br.BroadcastFn("[BR] Battle Royale has ended.")
+			}
 		}
 	}
 }

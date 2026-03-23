@@ -1312,10 +1312,6 @@ func (s *Server) BroadcastBattleRoyale() {
 	}
 
 	info := s.BattleRoyale.GetInfo()
-	// Only broadcast when BR is active (not inactive)
-	if info.State == 0 {
-		return
-	}
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
