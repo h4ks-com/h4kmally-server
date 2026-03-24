@@ -77,6 +77,8 @@ type Cell struct {
 	FeedCount int
 	// Virus: last player who fed this virus (for kill attribution)
 	Feeder *Player
+	// Freeze splitter projectile flag: when this virus hits, it freezes the target
+	IsFreezeSplitter bool
 
 	// Track if this cell is new this tick
 	Born bool

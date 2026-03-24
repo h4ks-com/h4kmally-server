@@ -708,32 +708,68 @@ func (c *Client) handleUsePowerup(payload []byte) {
 
 	switch powerupType {
 	case PowerupVirusLayer:
-		// Drop a virus at the player's center
+		// Drop a virus behind the farthest blob from the cursor.
+		// Find the cell farthest from the mouse, then place the virus on the
+		// far side of that cell (away from mouse), along line from center through that cell.
 		cx, cy := p.Center()
-		c.engine.SpawnVirusAt(cx, cy)
+		var farthest *game.Cell
+		var maxDist float64
+		for _, cell := range p.Cells {
+			dx := cell.X - p.MouseX
+			dy := cell.Y - p.MouseY
+			d := dx*dx + dy*dy
+			if d > maxDist {
+				maxDist = d
+				farthest = cell
+			}
+		}
+		if farthest != nil {
+			// Direction from center to farthest cell (away from cursor)
+			dx := farthest.X - cx
+			dy := farthest.Y - cy
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist < 1 {
+				// Single cell or all stacked — place opposite of cursor
+				dx = cx - p.MouseX
+				dy = cy - p.MouseY
+				dist = math.Sqrt(dx*dx + dy*dy)
+				if dist < 1 {
+					dx, dy, dist = 0, -1, 1
+				}
+			}
+			nx := dx / dist
+			ny := dy / dist
+			// Place virus just behind the farthest cell
+			vx := farthest.X + nx*farthest.Size*1.2
+			vy := farthest.Y + ny*farthest.Size*1.2
+			c.engine.SpawnVirusAt(vx, vy)
+		} else {
+			c.engine.SpawnVirusAt(cx, cy)
+		}
 
 	case PowerupSpeedBoost:
-		// 2 seconds of 2x speed = 50 ticks at 25Hz
-		p.SpeedBoostTicks = 50
+		// 6 seconds of 2x speed = 150 ticks at 25Hz
+		p.SpeedBoostTicks = 150
 
 	case PowerupGhostMode:
-		// 4 seconds = 100 ticks
-		p.GhostModeTicks = 100
+		// 6 seconds = 150 ticks
+		p.GhostModeTicks = 150
 
 	case PowerupMassMagnet:
 		// 5 seconds = 125 ticks
 		p.MassMagnetTicks = 125
 
 	case PowerupFreezeSplitter:
-		// Fire a fast-moving projectile toward mouse that force-splits the first player it hits
+		// Fire a fast-moving projectile toward mouse that force-splits AND freezes the first player it hits
 		cx, cy := p.Center()
 		c.engine.SpawnFreezeSplitter(p, cx, cy, p.MouseX, p.MouseY)
 
 	case PowerupRecombine:
-		// Instantly merge all cells
+		// Instantly allow merge + actively pull cells together for 1 second
 		for _, cell := range p.Cells {
 			cell.MergeAt = 0
 		}
+		p.RecombineTicks = 25 // 1 second of active pull
 	}
 
 	// Send updated powerup state to client
