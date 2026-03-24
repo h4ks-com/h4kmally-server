@@ -159,6 +159,7 @@ func main() {
 	mux.HandleFunc("/api/admin/br/start", adminHandler.HandleAdminBRStart)
 	mux.HandleFunc("/api/admin/br/stop", adminHandler.HandleAdminBRStop)
 	mux.HandleFunc("/api/admin/br/status", adminHandler.HandleAdminBRStatus)
+	mux.HandleFunc("/api/admin/br/auto", adminHandler.HandleAdminBRAutoConfig)
 	mux.HandleFunc("/api/admin/grant-powerup", adminHandler.HandleAdminGrantPowerup)
 
 	// Skins API: manifest + access-checked list + image serving

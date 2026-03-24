@@ -730,7 +730,83 @@ func (ah *AdminHandler) HandleAdminBRStatus(w http.ResponseWriter, r *http.Reque
 	}
 
 	info := br.GetInfo()
-	json.NewEncoder(w).Encode(info)
+
+	// Add auto-scheduling info
+	autoEnabled, autoInterval := br.GetAutoConfig()
+	type brStatusResp struct {
+		State         int     `json:"state"`
+		Countdown     int     `json:"countdown,omitempty"`
+		PlayersAlive  int     `json:"playersAlive"`
+		ZoneCX        float64 `json:"zoneCX,omitempty"`
+		ZoneCY        float64 `json:"zoneCY,omitempty"`
+		ZoneRadius    float64 `json:"zoneRadius,omitempty"`
+		TimeRemaining int     `json:"timeRemaining,omitempty"`
+		WinnerName    string  `json:"winnerName,omitempty"`
+		AutoEnabled   bool    `json:"autoEnabled"`
+		AutoInterval  int     `json:"autoInterval"` // minutes
+	}
+	resp := brStatusResp{
+		State:         info.State,
+		Countdown:     info.Countdown,
+		PlayersAlive:  info.PlayersAlive,
+		ZoneCX:        info.ZoneCX,
+		ZoneCY:        info.ZoneCY,
+		ZoneRadius:    info.ZoneRadius,
+		TimeRemaining: info.TimeRemaining,
+		WinnerName:    info.WinnerName,
+		AutoEnabled:   autoEnabled,
+		AutoInterval:  autoInterval,
+	}
+	json.NewEncoder(w).Encode(resp)
+}
+
+// HandleAdminBRAutoConfig sets the auto-scheduling config for Battle Royale.
+// POST /api/admin/br/auto  body: {"enabled":true,"intervalMinutes":60}
+func (ah *AdminHandler) HandleAdminBRAutoConfig(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	br := ah.server.BattleRoyale
+	if br == nil {
+		w.WriteHeader(500)
+		w.Write([]byte(`{"error":"battle royale not initialized"}`))
+		return
+	}
+
+	var body struct {
+		Enabled         bool `json:"enabled"`
+		IntervalMinutes int  `json:"intervalMinutes"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"invalid json"}`))
+		return
+	}
+
+	if body.IntervalMinutes < 1 {
+		body.IntervalMinutes = 60 // default
+	}
+
+	br.SetAutoConfig(body.Enabled, body.IntervalMinutes)
+	log.Printf("[Admin] %s set BR auto-schedule: enabled=%v interval=%dm", sess.UserSub, body.Enabled, body.IntervalMinutes)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":              true,
+		"enabled":         body.Enabled,
+		"intervalMinutes": body.IntervalMinutes,
+	})
 }
 
 // HandleAdminGrantPowerup grants a specific powerup to a user.
