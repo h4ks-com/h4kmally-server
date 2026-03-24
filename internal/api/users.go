@@ -373,11 +373,27 @@ func (us *UserStore) GetOrCreateDailyState(sub string, cfg game.Config, botCount
 		return nil
 	}
 	today := todayKey()
-	if user.DailyState == nil || user.DailyState.DateKey != today {
+	regenerate := user.DailyState == nil || user.DailyState.DateKey != today
+	// Also regenerate if any goal has a zero target (bugged generation)
+	if !regenerate && user.DailyState != nil {
+		for _, g := range user.DailyState.Goals {
+			if g.Target <= 0 {
+				regenerate = true
+				break
+			}
+		}
+	}
+	if regenerate {
+		// Preserve existing powerups when regenerating goals
+		var oldPowerups map[PowerupType]int
+		if user.DailyState != nil {
+			oldPowerups = user.DailyState.Powerups
+		}
 		goals := GenerateDailyGoals(sub, cfg, botCount)
 		user.DailyState = &UserDailyState{
-			DateKey: today,
-			Goals:   goals,
+			DateKey:  today,
+			Goals:    goals,
+			Powerups: oldPowerups,
 		}
 	}
 	return user.DailyState

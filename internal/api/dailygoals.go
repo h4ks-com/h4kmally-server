@@ -222,10 +222,10 @@ func GenerateDailyGoals(userSub string, cfg game.Config, botCount int) [3]DailyG
 	idx = rng.intn(len(remaining))
 	picked = append(picked, remaining[idx])
 
-	// Compute scaling factors from config
-	foodScale := float64(cfg.FoodCount) / 2000.0
-	foodSizeScale := cfg.FoodSize / 17.3
-	virusScale := float64(cfg.VirusCount) / 30.0
+	// Compute scaling factors from config (floor at 0.1 to avoid 0-target goals)
+	foodScale := math.Max(0.1, float64(cfg.FoodCount)/2000.0)
+	foodSizeScale := math.Max(0.1, cfg.FoodSize/17.3)
+	virusScale := math.Max(0.1, float64(cfg.VirusCount)/30.0)
 	botScale := math.Max(1.0, 1.0+float64(botCount)/20.0)
 
 	var goals [3]DailyGoal
@@ -252,6 +252,9 @@ func GenerateDailyGoals(userSub string, cfg game.Config, botCount int) [3]DailyG
 		}
 
 		target := minV + rng.intn(maxV-minV+1)
+		if target < 1 {
+			target = 1
+		}
 
 		desc := def.Description
 		switch def.Type {
