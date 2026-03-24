@@ -1505,10 +1505,10 @@ func (s *Server) TickBattleRoyale() {
 	}
 }
 
-// grantBRRewards gives powerup packs and skin tokens to BR top-3 finishers.
-// 1st: 2 powerup packs + 2 skin token packs (5 tokens each)
-// 2nd: 1 powerup pack + 1 skin token pack
-// 3rd: 1 skin token pack
+// grantBRRewards gives powerup packs, skin tokens, and effect tokens to BR top-3 finishers.
+// 1st: 2 powerup packs + 10 skin tokens + 10 effect tokens
+// 2nd: 1 powerup pack + 5 skin tokens
+// 3rd: 5 skin tokens
 func (s *Server) grantBRRewards() {
 	if s.AuthMgr == nil {
 		return
@@ -1527,14 +1527,15 @@ func (s *Server) grantBRRewards() {
 	s.mu.RUnlock()
 
 	type reward struct {
-		place      int
-		powerPacks int
-		skinTokens int // each "pack" = 5 skin tokens
+		place        int
+		powerPacks   int
+		skinTokens   int
+		effectTokens int
 	}
 	rewards := []reward{
-		{1, 2, 10}, // 1st: 2 powerup packs + 2×5 skin tokens
-		{2, 1, 5},  // 2nd: 1 powerup pack + 1×5 skin tokens
-		{3, 0, 5},  // 3rd: 1×5 skin tokens
+		{1, 2, 10, 10}, // 1st: 2 powerup packs + 10 skin tokens + 10 effect tokens
+		{2, 1, 5, 0},   // 2nd: 1 powerup pack + 5 skin tokens
+		{3, 0, 5, 0},   // 3rd: 5 skin tokens
 	}
 	ids := []uint32{first, second, third}
 
@@ -1553,12 +1554,15 @@ func (s *Server) grantBRRewards() {
 		if r.skinTokens > 0 {
 			s.AuthMgr.UserStore.GrantTokens(sub, r.skinTokens)
 		}
-		log.Printf("[BR] Granted rewards to #%d (%s): %d powerup packs, %d skin tokens",
-			r.place, sub, r.powerPacks, r.skinTokens)
+		if r.effectTokens > 0 {
+			s.AuthMgr.UserStore.GrantEffectTokens(sub, r.effectTokens)
+		}
+		log.Printf("[BR] Granted rewards to #%d (%s): %d powerup packs, %d skin tokens, %d effect tokens",
+			r.place, sub, r.powerPacks, r.skinTokens, r.effectTokens)
 	}
 
 	if s.BattleRoyale.BroadcastFn != nil {
-		s.BattleRoyale.BroadcastFn("[BR] Prizes awarded! 🏆 1st: 2 powerup + 2 skin packs · 2nd: 1 + 1 · 3rd: 1 skin pack")
+		s.BattleRoyale.BroadcastFn("[BR] Prizes awarded! 🏆 1st: 2 powerup + 10 skin + 10 effect tokens · 2nd: 1 powerup + 5 skin · 3rd: 5 skin tokens")
 	}
 }
 
