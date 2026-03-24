@@ -341,6 +341,7 @@ type skinEntry struct {
 	Category string `json:"category"`
 	Rarity   string `json:"rarity"`
 	MinLevel int    `json:"minLevel,omitempty"` // for "level" category skins
+	OwnerSub string `json:"ownerSub,omitempty"` // for "custom" category — owner's user sub
 }
 
 const skinsDir = "skins"
@@ -722,4 +723,57 @@ func (ah *AdminHandler) HandleAdminBRStatus(w http.ResponseWriter, r *http.Reque
 
 	info := br.GetInfo()
 	json.NewEncoder(w).Encode(info)
+}
+
+// HandleAdminGrantPowerup grants a specific powerup to a user.
+// POST /api/admin/grant-powerup  body: {"sub":"...","powerup":"virus_layer","charges":5}
+func (ah *AdminHandler) HandleAdminGrantPowerup(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+
+	var body struct {
+		Sub     string `json:"sub"`
+		Powerup string `json:"powerup"`
+		Charges int    `json:"charges"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"invalid json"}`))
+		return
+	}
+
+	// Validate powerup type
+	pType := PowerupType(body.Powerup)
+	pDef := GetPowerupDef(pType)
+	if pDef == nil {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"invalid powerup type"}`))
+		return
+	}
+
+	charges := body.Charges
+	if charges <= 0 {
+		charges = pDef.Charges // default charges
+	}
+
+	ok := ah.authMgr.UserStore.AdminGrantPowerup(body.Sub, pType, charges)
+	if !ok {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error":"user not found"}`))
+		return
+	}
+
+	log.Printf("[Admin] %s granted powerup %s (%d charges) to %s", sess.UserSub, body.Powerup, charges, body.Sub)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":      true,
+		"powerup": body.Powerup,
+		"charges": charges,
+	})
 }

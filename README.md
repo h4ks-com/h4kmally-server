@@ -14,7 +14,7 @@ Uses the **SIG 0.0.2** binary WebSocket protocol with opcode shuffling, and is d
 - Skin system with categories (free, level-gated, premium)
 - **Border effects** — 4 free + 6 premium visual effects rendered around player cells
 - **Token economy** — skin tokens and effect tokens, unlocked via shop or token reveals
-- **Token shop** — purchase tokens with Beans Bank currency; bundles available
+- **Shop** — purchase tokens with Beans Bank currency; bundles available
 - **Daily gift** — free Beans gift every 24 hours for logged-in users
 - **Multibox** — control two independent players on a single connection
 - **Top users API** — all-time highest scorers leaderboard
@@ -88,7 +88,7 @@ h4kmally-server/
 │   │   ├── auth.go          # OAuth2 (Logto) authentication
 │   │   ├── admin.go         # Admin panel endpoints
 │   │   ├── users.go         # User store, points, levels, unlocks
-│   │   ├── shop.go          # Token shop, daily gift, order fulfillment
+│   │   ├── shop.go          # Shop, daily gift, order fulfillment
 │   │   └── payment.go       # Payment provider interface (Beans Bank)
 │   ├── game/
 │   │   ├── config.go        # All tunable game parameters
@@ -141,9 +141,9 @@ Border effects are visual overlays rendered around player cells. They are select
 | `glitch` | Glitch | Digital distortion — RGB shift, scan lines, data corruption |
 | `blackhole` | Black Hole | Gravitational warping of nearby grid, cells, food, viruses, and border with spaghettification |
 
-## Token Shop
+## Shop
 
-The token shop allows authenticated users to purchase skin tokens and effect tokens using [Beans Bank](https://beans.h4ks.com) currency.
+The Shop allows authenticated users to purchase skin tokens and effect tokens using [Beans Bank](https://beans.h4ks.com) currency.
 
 ### Item Tiers
 

@@ -398,19 +398,22 @@ func (ch *ClanHandler) HandleCreateClan(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Admins create for free; others need 50 beans payment
+	// Admins create for free; others need 50 beans payment (or a shop-purchased slot)
 	user := ch.userStore.GetUser(sess.UserSub)
 	if user == nil || (!user.IsAdmin && ch.payment != nil) {
-		// Non-admin: return payment URL for 50 beans
-		// The client will redirect the user to pay, then call create again after payment
-		// For now, we generate a payment URL
-		url := ch.payment.PaymentURL(sess.UserUsername, 50)
-		json.NewEncoder(w).Encode(map[string]interface{}{
-			"requiresPayment": true,
-			"paymentUrl":      url,
-			"amount":          50,
-		})
-		return
+		// Check if the user purchased a clan creation slot from the shop
+		if ch.userStore.UseClanCreationSlot(sess.UserSub) {
+			// Slot consumed — fall through to create the clan for free
+		} else {
+			// Non-admin without a slot: return payment URL for 50 beans
+			url := ch.payment.PaymentURL(sess.UserUsername, 50)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"requiresPayment": true,
+				"paymentUrl":      url,
+				"amount":          50,
+			})
+			return
+		}
 	}
 
 	clan, err := ch.clanStore.CreateClan(body.Name, body.Tag, sess.UserSub, sess.UserName)

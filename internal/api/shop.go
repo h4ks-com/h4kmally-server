@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -12,7 +13,7 @@ import (
 	"time"
 )
 
-// ShopItem defines a purchasable item in the token shop.
+// ShopItem defines a purchasable item in the Shop.
 type ShopItem struct {
 	ID           string `json:"id"`
 	Name         string `json:"name"`
@@ -49,7 +50,7 @@ type DailyGiftState struct {
 	Redeemed  bool   `json:"redeemed"`
 }
 
-// ShopHandler manages the token shop and daily gift system.
+// ShopHandler manages the Shop and daily gift system.
 type ShopHandler struct {
 	authMgr   *AuthManager
 	userStore *UserStore
@@ -85,6 +86,12 @@ func NewShopHandler(authMgr *AuthManager, userStore *UserStore, payment PaymentP
 			{ID: "bundle-starter", Name: "Starter Pack", Price: 8, Tokens: 13, Type: "bundle", SkinTokens: 8, EffectTokens: 5, Section: "bundle"},
 			{ID: "bundle-pro", Name: "Pro Pack", Price: 18, Tokens: 32, Type: "bundle", SkinTokens: 20, EffectTokens: 12, Section: "bundle"},
 			{ID: "bundle-ultimate", Name: "Ultimate Pack", Price: 30, Tokens: 70, Type: "bundle", SkinTokens: 45, EffectTokens: 25, Section: "bundle"},
+			// ── Powerup Pack ──
+			{ID: "powerup-pack", Name: "Powerup Pack", Price: 10, Tokens: 0, Type: "powerup", Section: "powerup"},
+			// ── Custom Skin Upload ──
+			{ID: "custom-skin", Name: "Custom Skin Upload", Price: 50, Tokens: 0, Type: "custom_skin", Section: "custom_skin"},
+			// ── Clan Creation ──
+			{ID: "create-clan", Name: "Create a Clan", Price: 50, Tokens: 0, Type: "clan", Section: "clan"},
 		},
 	}
 
@@ -177,8 +184,25 @@ func (sh *ShopHandler) HandleDailyGift(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine daily gift amount based on top-user ranking.
+	// #1 → 6 beans, #2 → 5 beans, #3 → 4 beans, everyone else → 3 beans.
+	giftAmount := 3
+	rank := sh.userStore.GetPointsRank(session.UserSub)
+	switch rank {
+	case 1:
+		giftAmount = 6
+	case 2:
+		giftAmount = 5
+	case 3:
+		giftAmount = 4
+	}
+
 	// Create a new daily gift
-	gift, err := sh.payment.CreateGiftLink(3, "24h", "Daily h4kmally gift! 🎮")
+	giftMsg := "Daily h4kmally gift! 🎮"
+	if giftAmount > 3 {
+		giftMsg = fmt.Sprintf("Daily h4kmally gift! 🎮 (#%d bonus: %d🫘)", rank, giftAmount)
+	}
+	gift, err := sh.payment.CreateGiftLink(giftAmount, "24h", giftMsg)
 	if err != nil {
 		log.Printf("[Shop] Failed to create daily gift for %s: %v", session.UserName, err)
 		w.WriteHeader(500)
@@ -459,6 +483,15 @@ func (sh *ShopHandler) checkTransactions() {
 			case "bundle":
 				sh.userStore.GrantTokens(order.UserSub, order.SkinTokens)
 				sh.userStore.GrantEffectTokens(order.UserSub, order.EffectTokens)
+			case "powerup":
+				sh.userStore.GrantPowerupPack(order.UserSub)
+			case "custom_skin":
+				// Mark user as having purchased a custom skin upload slot.
+				// The actual upload is done via a separate endpoint.
+				sh.userStore.AddCustomSkinSlot(order.UserSub)
+			case "clan":
+				// Grant a clan creation slot — user can create a clan without separate payment.
+				sh.userStore.AddClanCreationSlot(order.UserSub)
 			default:
 				sh.userStore.GrantTokens(order.UserSub, order.Tokens)
 			}

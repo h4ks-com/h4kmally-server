@@ -19,6 +19,7 @@ const (
 	OpMultiboxSwitch = 23 // switch active slot (1 byte opcode only)
 	OpDirectionLock  = 24 // lock/unlock movement direction (payload: 1 byte, 1=lock 0=unlock)
 	OpFreezePosition = 25 // freeze/unfreeze cell position (payload: 1 byte, 1=freeze 0=unfreeze)
+	OpUsePowerup     = 26 // use a charge of the active powerup (1 byte opcode only)
 	OpChat           = 99
 	OpBoostCheck     = 190
 	OpStatUpdate     = 191
@@ -45,6 +46,7 @@ const (
 	OpClanChatRecv  = 100 // clan chat message
 	OpClanPositions = 101 // periodic clan member positions
 	OpBattleRoyale  = 102 // battle royale zone update
+	OpPowerupState  = 103 // powerup inventory state (type + charges)
 	OpPasswordErr   = 180
 	OpSpawnResult   = 221
 	OpPingReply     = 254
@@ -265,5 +267,29 @@ func BuildBattleRoyale(st *ShuffleTable, state byte, playersAlive int, countdown
 	buf = appendF32(buf, float32(zoneCY))
 	buf = appendF32(buf, float32(zoneRadius))
 	buf = append(buf, winnerBytes...)
+	return buf
+}
+
+// BuildPowerupState builds a POWERUP_STATE packet with full inventory.
+// Format: opcode(1) + count(1) + [typeLen(1) + type(string) + charges(1)] * count
+func BuildPowerupState(st *ShuffleTable, inventory map[string]int) []byte {
+	buf := make([]byte, 0, 64)
+	buf = append(buf, st.Encode(OpPowerupState))
+	count := 0
+	for _, c := range inventory {
+		if c > 0 {
+			count++
+		}
+	}
+	buf = append(buf, byte(count))
+	for t, c := range inventory {
+		if c <= 0 {
+			continue
+		}
+		typeBytes := []byte(t)
+		buf = append(buf, byte(len(typeBytes)))
+		buf = append(buf, typeBytes...)
+		buf = append(buf, byte(c))
+	}
 	return buf
 }

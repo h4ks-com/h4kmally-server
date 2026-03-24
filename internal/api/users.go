@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/h4ks-com/h4kmally-server/internal/game"
 )
 
 // TokensPerSkinUnlock is how many tokens are needed to unlock a premium skin.
@@ -89,6 +91,14 @@ type UserProfile struct {
 
 	// Clan
 	ClanID string `json:"clanId,omitempty"` // clan this user belongs to
+
+	// Custom skins uploaded by this user
+	CustomSkins     []string `json:"customSkins,omitempty"`
+	CustomSkinSlots    int      `json:"customSkinSlots,omitempty"`    // unused upload slots purchased
+	ClanCreationSlots int      `json:"clanCreationSlots,omitempty"` // unused clan creation slots purchased
+
+	// Daily goals & powerups
+	DailyState *UserDailyState `json:"dailyState,omitempty"`
 }
 
 // IsBanned returns true if the user is currently banned.
@@ -253,6 +263,24 @@ func (us *UserStore) GetAll() []*UserProfile {
 	return result
 }
 
+// GetPointsRank returns the 1-based rank of the user by all-time points.
+// Returns 0 if user not found.
+func (us *UserStore) GetPointsRank(sub string) int {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists || user.Points <= 0 {
+		return 0
+	}
+	rank := 1
+	for _, u := range us.users {
+		if u.Sub != sub && u.Points > user.Points && !u.IsBanned() {
+			rank++
+		}
+	}
+	return rank
+}
+
 // AddScore records a game result for the user.
 // Kept for backward compatibility but points are now banked live via UpdatePoints.
 func (us *UserStore) AddScore(sub string, score int64) {
@@ -333,6 +361,153 @@ func (us *UserStore) SetClanID(sub, clanID string) {
 		user.ClanID = clanID
 		us.save()
 	}
+}
+
+// GetOrCreateDailyState ensures a user has a valid daily state for today.
+// If the state is stale (different day), regenerate goals.
+func (us *UserStore) GetOrCreateDailyState(sub string, cfg game.Config, botCount int) *UserDailyState {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return nil
+	}
+	today := todayKey()
+	if user.DailyState == nil || user.DailyState.DateKey != today {
+		goals := GenerateDailyGoals(sub, cfg, botCount)
+		user.DailyState = &UserDailyState{
+			DateKey: today,
+			Goals:   goals,
+		}
+	}
+	return user.DailyState
+}
+
+// FlushDailyGoalProgress reads session stats from a Player and updates daily goal progress.
+// Called on player death.
+func (us *UserStore) FlushDailyGoalProgress(sub string, p *game.Player) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists || user.DailyState == nil {
+		return
+	}
+	today := todayKey()
+	if user.DailyState.DateKey != today {
+		return // stale state, don't update
+	}
+
+	for i := range user.DailyState.Goals {
+		g := &user.DailyState.Goals[i]
+		if g.Completed {
+			continue
+		}
+		switch g.Type {
+		case GoalScore:
+			// Cumulative mass across all lives today
+			val := int(p.SessionPeakMass)
+			g.Progress += val
+		case GoalPlayerKills:
+			g.Progress += p.SessionKills
+		case GoalVirusShoot:
+			g.Progress += p.SessionVirusHits
+		case GoalGamesPlayed:
+			g.Progress += 1
+		case GoalPacifist:
+			// Best no-split life peak mass
+			if p.SessionNoSplit {
+				val := int(p.SessionPeakMass)
+				if val > g.Progress {
+					g.Progress = val
+				}
+			}
+		case GoalRevenge:
+			g.Progress += p.SessionRevenge
+		case GoalMassEjected:
+			g.Progress += int(p.SessionMassEject)
+		}
+		if g.Progress >= g.Target {
+			g.Progress = g.Target
+			g.Completed = true
+		}
+	}
+
+	// Check if all 3 goals are complete → grant powerup
+	allDone := true
+	for _, g := range user.DailyState.Goals {
+		if !g.Completed {
+			allDone = false
+			break
+		}
+	}
+	if allDone && !user.DailyState.PowerupGranted {
+		user.DailyState.PowerupGranted = true
+		pType, charges := GrantRandomPowerup(sub)
+		if user.DailyState.Powerups == nil {
+			user.DailyState.Powerups = make(map[PowerupType]int)
+		}
+		user.DailyState.Powerups[pType] += charges
+	}
+}
+
+// LoadPowerups copies all powerups from the user's daily state into the player's inventory.
+// Returns true if any powerups were loaded.
+func (us *UserStore) LoadPowerups(sub string, p *game.Player) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists || user.DailyState == nil {
+		return false
+	}
+	ds := user.DailyState
+	if len(ds.Powerups) == 0 {
+		return false
+	}
+	if p.PowerupInventory == nil {
+		p.PowerupInventory = make(map[string]int)
+	}
+	for t, c := range ds.Powerups {
+		if c > 0 {
+			p.PowerupInventory[string(t)] = c
+		}
+	}
+	return len(p.PowerupInventory) > 0
+}
+
+// DecrementPowerupCharge decreases the persistent charge count for a specific powerup type.
+func (us *UserStore) DecrementPowerupCharge(sub string, pType string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists || user.DailyState == nil || user.DailyState.Powerups == nil {
+		return
+	}
+	pt := PowerupType(pType)
+	if user.DailyState.Powerups[pt] > 0 {
+		user.DailyState.Powerups[pt]--
+	}
+	if user.DailyState.Powerups[pt] <= 0 {
+		delete(user.DailyState.Powerups, pt)
+	}
+}
+
+// AdminGrantPowerup adds charges of a specific powerup to a user's inventory (stacks with existing).
+func (us *UserStore) AdminGrantPowerup(sub string, pType PowerupType, charges int) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.DailyState == nil {
+		user.DailyState = &UserDailyState{DateKey: todayKey()}
+	}
+	if user.DailyState.Powerups == nil {
+		user.DailyState.Powerups = make(map[PowerupType]int)
+	}
+	user.DailyState.Powerups[pType] += charges
+	user.DailyState.PowerupGranted = true
+	return true
 }
 
 // GetUser returns a user profile by sub (alias for Get).
@@ -602,6 +777,118 @@ func (us *UserStore) HasEffectUnlocked(sub, effectName string) bool {
 		return false
 	}
 	return stringInSlice(user.UnlockedEffects, effectName)
+}
+
+// GrantPowerupPack adds default charges for all 6 powerups to the user's daily state.
+func (us *UserStore) GrantPowerupPack(sub string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.DailyState == nil {
+		user.DailyState = &UserDailyState{}
+	}
+	if user.DailyState.Powerups == nil {
+		user.DailyState.Powerups = make(map[PowerupType]int)
+	}
+	for _, def := range PowerupDefs {
+		user.DailyState.Powerups[def.Type] += def.Charges
+	}
+	us.save()
+}
+
+// AddCustomSkin records a custom skin in the user's profile.
+func (us *UserStore) AddCustomSkin(sub, skinName string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if !skinInSlice(user.CustomSkins, skinName) {
+		user.CustomSkins = append(user.CustomSkins, skinName)
+	}
+	us.save()
+}
+
+// AddCustomSkinSlot increments the user's available custom skin upload slots.
+func (us *UserStore) AddCustomSkinSlot(sub string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	user.CustomSkinSlots++
+	us.save()
+}
+
+// UseCustomSkinSlot decrements a custom skin upload slot. Returns false if none available.
+func (us *UserStore) UseCustomSkinSlot(sub string) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.CustomSkinSlots <= 0 {
+		return false
+	}
+	user.CustomSkinSlots--
+	us.save()
+	return true
+}
+
+// GetCustomSkinSlots returns the number of unused custom skin upload slots.
+func (us *UserStore) GetCustomSkinSlots(sub string) int {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return 0
+	}
+	return user.CustomSkinSlots
+}
+
+// AddClanCreationSlot increments the user's available clan creation slots.
+func (us *UserStore) AddClanCreationSlot(sub string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	user.ClanCreationSlots++
+	us.save()
+}
+
+// UseClanCreationSlot decrements a clan creation slot. Returns false if none available.
+func (us *UserStore) UseClanCreationSlot(sub string) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.ClanCreationSlots <= 0 {
+		return false
+	}
+	user.ClanCreationSlots--
+	us.save()
+	return true
+}
+
+// GetClanCreationSlots returns the number of unused clan creation slots.
+func (us *UserStore) GetClanCreationSlots(sub string) int {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return 0
+	}
+	return user.ClanCreationSlots
 }
 
 func skinInSlice(slice []string, s string) bool {

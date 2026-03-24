@@ -159,12 +159,16 @@ func main() {
 	mux.HandleFunc("/api/admin/br/start", adminHandler.HandleAdminBRStart)
 	mux.HandleFunc("/api/admin/br/stop", adminHandler.HandleAdminBRStop)
 	mux.HandleFunc("/api/admin/br/status", adminHandler.HandleAdminBRStatus)
+	mux.HandleFunc("/api/admin/grant-powerup", adminHandler.HandleAdminGrantPowerup)
 
 	// Skins API: manifest + access-checked list + image serving
 	mux.HandleFunc("/api/skins", api.HandleSkinsList)
 	mux.HandleFunc("/api/skins/access", server.HandleSkinsAccess)
+	mux.HandleFunc("/api/skins/upload", server.HandleUploadCustomSkin)
 	mux.HandleFunc("/api/effects/access", server.HandleEffectsAccess)
 	mux.HandleFunc("/api/top-users", server.HandleTopUsers)
+	mux.HandleFunc("/api/daily-goals", server.HandleDailyGoals)
+	mux.HandleFunc("/api/daily-goals/activate-powerup", server.HandleActivatePowerup)
 	mux.Handle("/skins/", http.StripPrefix("/skins/", http.FileServer(http.Dir("skins"))))
 
 	// Public API

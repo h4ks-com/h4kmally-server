@@ -44,6 +44,25 @@ type Player struct {
 	Score     float64 // total mass
 	SpawnProt int     // ticks of spawn protection remaining
 
+	// ── Session stats (reset on spawn, used for daily goal tracking) ──
+	SessionKills     int     // player cells eaten this life
+	SessionSplits    int     // times split was pressed this life
+	SessionMassEject float64 // total mass ejected this life
+	SessionPeakMass  float64 // highest mass reached this life (no-split tracked separately)
+	SessionNoSplit   bool    // true if player has not split this life
+	SessionVirusHits int     // viruses shot into players (attributed via eject owner)
+	SessionRevenge   int     // revenge kills this session
+	SessionGames     int     // games played this session (across lives)
+
+	// Revenge tracking: maps playerID → tick when they last ate one of our cells
+	RevengeWindow map[uint32]uint64
+
+	// ── Active powerup state ──
+	PowerupInventory  map[string]int // type → charges (multiple powerups)
+	SpeedBoostTicks   int    // ticks remaining for active speed boost
+	GhostModeTicks    int    // ticks remaining for ghost mode
+	MassMagnetTicks   int    // ticks remaining for mass magnet
+
 	// Connection reference (set externally)
 	Conn interface{}
 }
@@ -70,8 +89,22 @@ func NewPlayer(name, skin, effect string) *Player {
 			uint8(rand.IntN(200) + 55),
 			uint8(rand.IntN(200) + 55),
 		},
-		Cells: make([]*Cell, 0, 16),
+		Cells:         make([]*Cell, 0, 16),
+		SessionNoSplit: true,
+		RevengeWindow: make(map[uint32]uint64),
 	}
+}
+
+// ResetSessionStats resets per-life stats (called on spawn).
+func (p *Player) ResetSessionStats() {
+	p.SessionKills = 0
+	p.SessionSplits = 0
+	p.SessionMassEject = 0
+	p.SessionPeakMass = 0
+	p.SessionNoSplit = true
+	p.SessionVirusHits = 0
+	p.SessionRevenge = 0
+	p.RevengeWindow = make(map[uint32]uint64)
 }
 
 // TotalMass returns the sum of mass across all cells.

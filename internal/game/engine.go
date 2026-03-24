@@ -355,9 +355,26 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, ti
 		}
 		if p.Alive {
 			p.Score = p.TotalMass()
+			if p.Score > p.SessionPeakMass {
+				p.SessionPeakMass = p.Score
+			}
 		}
 		if p.SpawnProt > 0 {
 			p.SpawnProt--
+		}
+		// Tick down powerup timers
+		if p.SpeedBoostTicks > 0 {
+			p.SpeedBoostTicks--
+		}
+		if p.GhostModeTicks > 0 {
+			p.GhostModeTicks--
+		}
+		if p.MassMagnetTicks > 0 {
+			p.MassMagnetTicks--
+			// Pull nearby food and eject cells toward player
+			if p.Alive && len(p.Cells) > 0 {
+				e.applyMassMagnet(p)
+			}
 		}
 	}
 
@@ -429,6 +446,42 @@ func (e *Engine) spawnViruses() {
 	}
 }
 
+// SpawnVirusAt creates a virus at a specific position (used by powerups).
+func (e *Engine) SpawnVirusAt(x, y float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	v := NewVirus(e.Cfg)
+	v.X = x
+	v.Y = y
+	e.addCell(v)
+	e.virusCount++
+}
+
+// SpawnFreezeSplitter creates a fast-moving eject cell toward mouse that force-splits the first player it hits.
+// It uses the virus cell type so it triggers virusPop on collision with players.
+func (e *Engine) SpawnFreezeSplitter(owner *Player, fromX, fromY, toX, toY float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	dx := toX - fromX
+	dy := toY - fromY
+	dist := math.Sqrt(dx*dx + dy*dy)
+	if dist < 1 {
+		dx, dy = 1, 0
+		dist = 1
+	}
+	nx := dx / dist
+	ny := dy / dist
+
+	v := NewVirus(e.Cfg)
+	v.X = fromX + nx*owner.Cells[0].Size*1.5 // spawn just outside the player
+	v.Y = fromY + ny*owner.Cells[0].Size*1.5
+	v.VX = nx * 1200.0 * BoostDecayRate // very fast projectile
+	v.VY = ny * 1200.0 * BoostDecayRate
+	v.Feeder = owner // attribute to the caster
+	e.addCell(v)
+	e.virusCount++
+}
+
 func (e *Engine) processPlayerSplit(p *Player) {
 	if !p.ConsumeSplit() {
 		return
@@ -436,6 +489,9 @@ func (e *Engine) processPlayerSplit(p *Player) {
 	if len(p.Cells) >= e.Cfg.MaxCells {
 		return
 	}
+	// Track daily goal stats
+	p.SessionSplits++
+	p.SessionNoSplit = false
 
 	// Split each cell that's large enough (snapshot current cells).
 	// Sort largest first so that when near max cells, the biggest cells
@@ -530,6 +586,7 @@ func (e *Engine) processPlayerEject(p *Player) {
 		// Mass-conserving: parent loses exactly what the blob carries.
 		c.SetMass(c.Mass() - ejectMass)
 		e.updated = append(e.updated, c)
+		p.SessionMassEject += ejectMass
 
 		// Spawn offset: cell edge + 16 padding (Ogar: cell.getSize() + 16)
 		spawnDist := c.Size + EjectSpawnPad
@@ -539,6 +596,7 @@ func (e *Engine) processPlayerEject(p *Player) {
 			c.R, c.G, c.B,
 			ejectSize,
 		)
+		ej.Owner = p // track who ejected for virus feed attribution
 		e.addCell(ej)
 	}
 }
@@ -601,6 +659,10 @@ func (e *Engine) moveMovableCells() {
 
 				if dist > 1 {
 					speed := SpeedForSize(c.Size) * e.Cfg.MoveSpeed * 40 // scale for tick interval
+					// Apply speed boost powerup
+					if p.SpeedBoostTicks > 0 {
+						speed *= 2.0
+					}
 					if speed > dist {
 						speed = dist
 					}
@@ -722,8 +784,8 @@ func (e *Engine) resolveCollisions() {
 				continue
 			}
 
-			// Same owner — push apart (no eating own cells unless merging)
-			if a.Owner != nil && b.Owner != nil && a.Owner == b.Owner {
+			// Same owner player cells — push apart (no eating own cells unless merging)
+			if a.Type == CellPlayer && b.Type == CellPlayer && a.Owner != nil && b.Owner != nil && a.Owner == b.Owner {
 				if a.MergeAt > int64(e.tickNum) || b.MergeAt > int64(e.tickNum) {
 					// Ogar-style: suppress push-apart for a fixed number of ticks
 					// after split (collisionRestoreTicks), then push normally.
@@ -745,6 +807,10 @@ func (e *Engine) resolveCollisions() {
 			// Virus + player (Ogar-style: same eating check as any other cell)
 			if a.Type == CellPlayer && b.Type == CellVirus {
 				if CanEat(a, b) {
+					// Credit the player who fed the virus
+					if b.Feeder != nil && b.Feeder != a.Owner {
+						b.Feeder.SessionVirusHits++
+					}
 					e.virusPop(a, b)
 					toRemove[b.ID] = true
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
@@ -760,6 +826,9 @@ func (e *Engine) resolveCollisions() {
 			if a.Type == CellVirus && b.Type == CellEject {
 				if dist < a.Size {
 					a.FeedCount++
+					if b.Owner != nil {
+						a.Feeder = b.Owner // track who fed the virus
+					}
 					toRemove[b.ID] = true
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
 					feedsToSplit := int(math.Round((e.Cfg.VirusMaxSize - e.Cfg.VirusSize) / e.Cfg.VirusFeedSize))
@@ -772,6 +841,9 @@ func (e *Engine) resolveCollisions() {
 			if a.Type == CellEject && b.Type == CellVirus {
 				if dist < b.Size {
 					b.FeedCount++
+					if a.Owner != nil {
+						b.Feeder = a.Owner // track who fed the virus
+					}
 					toRemove[a.ID] = true
 					e.eaten = append(e.eaten, EatEvent{b.ID, a.ID})
 					feedsToSplit := int(math.Round((e.Cfg.VirusMaxSize - e.Cfg.VirusSize) / e.Cfg.VirusFeedSize))
@@ -793,6 +865,30 @@ func (e *Engine) resolveCollisions() {
 			}
 
 			if CanEat(a, b) {
+				// Ghost Mode: skip player-vs-player eating when either has ghost mode active
+				if a.Type == CellPlayer && b.Type == CellPlayer && a.Owner != b.Owner {
+					aGhost := a.Owner != nil && a.Owner.GhostModeTicks > 0
+					bGhost := b.Owner != nil && b.Owner.GhostModeTicks > 0
+					if aGhost || bGhost {
+						continue
+					}
+				}
+				// Track player-kills-player for daily goals
+				if a.Type == CellPlayer && b.Type == CellPlayer && a.Owner != nil && b.Owner != nil && a.Owner != b.Owner {
+					// Check if victim had only 1 cell left -> this is a kill
+					if len(b.Owner.Cells) == 1 {
+						a.Owner.SessionKills++
+						// Check revenge: did this player kill us recently?
+						if tick, ok := a.Owner.RevengeWindow[b.Owner.ID]; ok {
+							if e.tickNum-tick < 25*60 { // 60 seconds
+								a.Owner.SessionRevenge++
+							}
+							delete(a.Owner.RevengeWindow, b.Owner.ID)
+						}
+					}
+					// Record in victim's revenge window so they can get revenge later
+					b.Owner.RevengeWindow[a.Owner.ID] = e.tickNum
+				}
 				e.eatCell(a, b)
 				toRemove[b.ID] = true
 				e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
@@ -906,6 +1002,7 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 	child := NewVirus(e.Cfg)
 	child.X = v.X
 	child.Y = v.Y
+	child.Feeder = v.Feeder // propagate feed attribution to child virus
 	// Virus split travels ~780 units (OgarII virusSplitBoost = 780)
 	const virusSplitV0 = 780.0 * BoostDecayRate
 	child.VX = math.Cos(angle) * virusSplitV0
@@ -915,6 +1012,7 @@ func (e *Engine) virusSplit(v *Cell, ejectVX, ejectVY float64) {
 
 	v.Size = e.Cfg.VirusSize
 	v.FeedCount = 0
+	v.Feeder = nil // reset parent virus feeder
 }
 
 func (e *Engine) applyDecay() {
@@ -931,6 +1029,33 @@ func (e *Engine) applyDecay() {
 				}
 				e.updated = append(e.updated, c)
 			}
+		}
+	}
+}
+
+// applyMassMagnet pulls nearby food and eject cells toward a player with the magnet powerup.
+func (e *Engine) applyMassMagnet(p *Player) {
+	const magnetRadius = 500.0 // pull range in game units
+	const pullStrength = 8.0   // speed of pull per tick
+	cx, cy := p.Center()
+	for _, c := range e.cells {
+		if c.Type != CellFood && c.Type != CellEject {
+			continue
+		}
+		// Don't pull own eject cells
+		if c.Type == CellEject && c.Owner == p {
+			continue
+		}
+		dx := cx - c.X
+		dy := cy - c.Y
+		dist := math.Sqrt(dx*dx + dy*dy)
+		if dist < magnetRadius && dist > 1 {
+			// Pull toward player center
+			nx := dx / dist
+			ny := dy / dist
+			c.X += nx * pullStrength
+			c.Y += ny * pullStrength
+			e.Grid.Move(c)
 		}
 	}
 }

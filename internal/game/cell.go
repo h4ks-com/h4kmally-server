@@ -75,6 +75,8 @@ type Cell struct {
 
 	// Virus: number of eject masses absorbed (triggers split at threshold)
 	FeedCount int
+	// Virus: last player who fed this virus (for kill attribution)
+	Feeder *Player
 
 	// Track if this cell is new this tick
 	Born bool

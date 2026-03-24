@@ -3,11 +3,15 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"math"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	sync_atomic "sync/atomic"
 	"time"
@@ -351,7 +355,16 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 			}
 		}
 
+		c.player.ResetSessionStats()
+		c.player.SessionGames++
 		c.engine.SpawnPlayer(c.player)
+
+		// Auto-load powerups from inventory on spawn
+		if c.userSub != "" && c.server.AuthMgr != nil {
+			if c.server.AuthMgr.UserStore.LoadPowerups(c.userSub, c.player) {
+				c.sendMsg(protocol.BuildPowerupState(c.shuffle, c.player.PowerupInventory))
+			}
+		}
 
 		// If multibox is enabled and the multi player is alive, teleport
 		// the freshly-spawned primary next to the multi player so they
@@ -438,6 +451,9 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 
 	case protocol.OpFreezePosition:
 		c.handleFreezePosition(msg.Payload)
+
+	case protocol.OpUsePowerup:
+		c.handleUsePowerup(msg.Payload)
 
 	case protocol.OpChat:
 		flags, text, ok := protocol.ParseChat(msg.Payload)
@@ -631,6 +647,73 @@ func (c *Client) handleFreezePosition(payload []byte) {
 		return
 	}
 	p.SetFrozen(freeze)
+}
+
+func (c *Client) handleUsePowerup(payload []byte) {
+	p := c.player
+	if p == nil || !p.Alive {
+		return
+	}
+	if len(payload) < 1 {
+		return
+	}
+	slot := int(payload[0]) // 1-6
+	if slot < 1 || slot > len(PowerupDefs) {
+		return
+	}
+
+	// Map slot to powerup type
+	powerupType := PowerupDefs[slot-1].Type
+	typeStr := string(powerupType)
+
+	// Check inventory
+	if p.PowerupInventory == nil || p.PowerupInventory[typeStr] <= 0 {
+		return
+	}
+
+	// Decrement runtime inventory
+	p.PowerupInventory[typeStr]--
+	if p.PowerupInventory[typeStr] <= 0 {
+		delete(p.PowerupInventory, typeStr)
+	}
+
+	// Also decrement the persistent state
+	if c.userSub != "" && c.server.AuthMgr != nil {
+		c.server.AuthMgr.UserStore.DecrementPowerupCharge(c.userSub, typeStr)
+	}
+
+	switch powerupType {
+	case PowerupVirusLayer:
+		// Drop a virus at the player's center
+		cx, cy := p.Center()
+		c.engine.SpawnVirusAt(cx, cy)
+
+	case PowerupSpeedBoost:
+		// 2 seconds of 2x speed = 50 ticks at 25Hz
+		p.SpeedBoostTicks = 50
+
+	case PowerupGhostMode:
+		// 4 seconds = 100 ticks
+		p.GhostModeTicks = 100
+
+	case PowerupMassMagnet:
+		// 5 seconds = 125 ticks
+		p.MassMagnetTicks = 125
+
+	case PowerupFreezeSplitter:
+		// Fire a fast-moving projectile toward mouse that force-splits the first player it hits
+		cx, cy := p.Center()
+		c.engine.SpawnFreezeSplitter(p, cx, cy, p.MouseX, p.MouseY)
+
+	case PowerupRecombine:
+		// Instantly merge all cells
+		for _, cell := range p.Cells {
+			cell.MergeAt = 0
+		}
+	}
+
+	// Send updated powerup state to client
+	c.sendMsg(protocol.BuildPowerupState(c.shuffle, p.PowerupInventory))
 }
 
 func (c *Client) sendMsg(msg []byte) {
@@ -1089,6 +1172,9 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 			}
 			s.AuthMgr.UserStore.RecordGame(client.userSub)
 			log.Printf("Recorded game for user %s (score %d)", client.userSub, score)
+
+			// Flush session stats to daily goal progress
+			s.AuthMgr.UserStore.FlushDailyGoalProgress(client.userSub, client.player)
 		}
 		client.lastTickScore = 0
 
@@ -1622,6 +1708,137 @@ func HandleSkinsList(w http.ResponseWriter, r *http.Request) {
 	http.ServeFile(w, r, "skins/manifest.json")
 }
 
+// HandleUploadCustomSkin lets authenticated users upload a personal skin (requires purchased slot).
+// POST /api/skins/upload?session=TOKEN  (multipart/form-data: file, name)
+func (s *Server) HandleUploadCustomSkin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	if s.AuthMgr == nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"auth not configured"}`))
+		return
+	}
+	session := s.AuthMgr.ValidateSession(r.URL.Query().Get("session"))
+	if session == nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+
+	// Check that user has an available slot
+	slots := s.AuthMgr.UserStore.GetCustomSkinSlots(session.UserSub)
+	if slots <= 0 {
+		w.WriteHeader(403)
+		w.Write([]byte(`{"error":"no custom skin upload slots available — purchase one from the shop first"}`))
+		return
+	}
+
+	// Parse multipart form (max 5MB for user uploads)
+	if err := r.ParseMultipartForm(5 << 20); err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "invalid form data: " + err.Error()})
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		w.WriteHeader(400)
+		json.NewEncoder(w).Encode(map[string]string{"error": "missing file field"})
+		return
+	}
+	defer file.Close()
+
+	skinName := r.FormValue("name")
+	if skinName == "" {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"name is required"}`))
+		return
+	}
+
+	// Sanitize name: only allow alphanumeric, dash, underscore
+	for _, c := range skinName {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_') {
+			w.WriteHeader(400)
+			w.Write([]byte(`{"error":"name must be alphanumeric (dashes and underscores allowed)"}`))
+			return
+		}
+	}
+
+	// Validate file extension
+	ext := strings.ToLower(filepath.Ext(header.Filename))
+	if ext != ".png" && ext != ".jpg" && ext != ".jpeg" && ext != ".gif" && ext != ".webp" {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"invalid file type, must be png/jpg/gif/webp"}`))
+		return
+	}
+
+	fileName := "custom_" + session.UserSub + "_" + skinName + ext
+	destPath := filepath.Join(skinsDir, fileName)
+
+	// Check if file already exists
+	if _, err := os.Stat(destPath); err == nil {
+		w.WriteHeader(409)
+		json.NewEncoder(w).Encode(map[string]string{"error": "a custom skin with this name already exists"})
+		return
+	}
+
+	// Write file to disk
+	dst, err := os.Create(destPath)
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to save file"})
+		return
+	}
+	defer dst.Close()
+	if _, err := io.Copy(dst, file); err != nil {
+		os.Remove(destPath)
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to write file"})
+		return
+	}
+
+	// Add to manifest
+	skins, err := loadManifest()
+	if err != nil {
+		skins = []skinEntry{}
+	}
+	displayName := session.UserName + "'s " + skinName
+	skins = append(skins, skinEntry{
+		Name:     displayName,
+		File:     fileName,
+		Category: "custom",
+		Rarity:   "legendary",
+		OwnerSub: session.UserSub,
+	})
+	if err := saveManifest(skins); err != nil {
+		os.Remove(destPath)
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to update manifest"})
+		return
+	}
+
+	// Consume the upload slot and record the skin
+	s.AuthMgr.UserStore.UseCustomSkinSlot(session.UserSub)
+	s.AuthMgr.UserStore.AddCustomSkin(session.UserSub, displayName)
+
+	log.Printf("[Skins] User %s uploaded custom skin: %s (%s)", session.UserName, displayName, fileName)
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":   true,
+		"name": displayName,
+		"file": fileName,
+	})
+}
+
 // SkinAccessEntry is one skin with access info for a specific user.
 type SkinAccessEntry struct {
 	Name       string `json:"name"`
@@ -1710,6 +1927,14 @@ func (s *Server) HandleSkinsAccess(w http.ResponseWriter, r *http.Request) {
 					entry.Accessible = false
 					entry.Reason = fmt.Sprintf("%d/%d tokens", tokens, TokensPerSkinUnlock)
 				}
+			case "custom":
+				// Custom skins are only accessible to the owner
+				if sk.OwnerSub != "" && sk.OwnerSub == user.Sub {
+					entry.Accessible = true
+				} else {
+					entry.Accessible = false
+					entry.Reason = "Owner only"
+				}
 			default:
 				// clan or other categories — locked for now
 				entry.Accessible = false
@@ -1727,6 +1952,7 @@ func (s *Server) HandleSkinsAccess(w http.ResponseWriter, r *http.Request) {
 	if user != nil {
 		resp["level"] = LevelFromPoints(user.Points)
 		resp["pendingTokens"] = user.PendingTokens
+		resp["customSkinSlots"] = user.CustomSkinSlots
 	}
 
 	json.NewEncoder(w).Encode(resp)
@@ -1904,5 +2130,91 @@ func (s *Server) HandleTopUsers(w http.ResponseWriter, r *http.Request) {
 
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"topUsers": entries,
+	})
+}
+
+// HandleDailyGoals returns the current daily goals + powerup state for the user.
+func (s *Server) HandleDailyGoals(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if s.AuthMgr == nil {
+		http.Error(w, "Auth not configured", 500)
+		return
+	}
+	sessionToken := r.URL.Query().Get("session")
+	session := s.AuthMgr.ValidateSession(sessionToken)
+	if session == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	// Get bot count from engine's player list (bots have Conn == nil)
+	botCount := 0
+	s.Engine.RLock()
+	for _, p := range s.Engine.Players() {
+		if p.Conn == nil {
+			botCount++
+		}
+	}
+	s.Engine.RUnlock()
+
+	state := s.AuthMgr.UserStore.GetOrCreateDailyState(session.UserSub, s.Engine.Cfg, botCount)
+	if state == nil {
+		http.Error(w, "User not found", 404)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(state)
+}
+
+// HandleActivatePowerup loads the user's powerup inventory into their active game session.
+func (s *Server) HandleActivatePowerup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if s.AuthMgr == nil {
+		http.Error(w, "Auth not configured", 500)
+		return
+	}
+	sessionToken := r.URL.Query().Get("session")
+	session := s.AuthMgr.ValidateSession(sessionToken)
+	if session == nil {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	// Find the client's active player and their Client
+	s.mu.RLock()
+	var activeClient *Client
+	for c := range s.clients {
+		if c.userSub == session.UserSub && c.player != nil && c.player.Alive {
+			activeClient = c
+			break
+		}
+	}
+	s.mu.RUnlock()
+
+	if activeClient == nil || activeClient.player == nil {
+		http.Error(w, "No active game session", 400)
+		return
+	}
+
+	ok := s.AuthMgr.UserStore.LoadPowerups(session.UserSub, activeClient.player)
+	if !ok {
+		http.Error(w, "No powerups available", 400)
+		return
+	}
+
+	// Send powerup state to the client via WS
+	activeClient.sendMsg(protocol.BuildPowerupState(activeClient.shuffle, activeClient.player.PowerupInventory))
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":        true,
+		"inventory": activeClient.player.PowerupInventory,
 	})
 }
