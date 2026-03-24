@@ -1696,6 +1696,11 @@ func (c *Client) validateSkinAccess(skinName string) string {
 			return skinName
 		}
 		return "" // not unlocked
+	case "custom":
+		if found.OwnerSub == c.userSub {
+			return skinName
+		}
+		return "" // not the owner
 	default:
 		return "" // unknown category
 	}
