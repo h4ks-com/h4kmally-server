@@ -1,8 +1,14 @@
 package api
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/draw"
+	"image/gif"
+	"image/jpeg"
+	"image/png"
 	"io"
 	"log"
 	"math"
@@ -17,6 +23,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	_ "golang.org/x/image/webp" // register WebP decoder for image.Decode
 
 	"github.com/h4ks-com/h4kmally-server/internal/game"
 	"github.com/h4ks-com/h4kmally-server/internal/protocol"
@@ -1796,19 +1803,101 @@ func (s *Server) HandleUploadCustomSkin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Write file to disk
-	dst, err := os.Create(destPath)
+	// Read file into memory for image processing
+	imgData, err := io.ReadAll(file)
 	if err != nil {
 		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to save file"})
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to read file"})
 		return
 	}
-	defer dst.Close()
-	if _, err := io.Copy(dst, file); err != nil {
-		os.Remove(destPath)
-		w.WriteHeader(500)
-		json.NewEncoder(w).Encode(map[string]string{"error": "failed to write file"})
-		return
+
+	// Center-crop to square and write to disk
+	if ext == ".gif" {
+		// Animated GIF: crop each frame
+		g, err := gif.DecodeAll(bytes.NewReader(imgData))
+		if err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid GIF image"})
+			return
+		}
+		if len(g.Image) > 0 {
+			bounds := image.Rect(0, 0, g.Config.Width, g.Config.Height)
+			if g.Config.Width == 0 || g.Config.Height == 0 {
+				bounds = g.Image[0].Bounds()
+			}
+			w0, h0 := bounds.Dx(), bounds.Dy()
+			side := w0
+			if h0 < side {
+				side = h0
+			}
+			if w0 != h0 {
+				ox := (w0 - side) / 2
+				oy := (h0 - side) / 2
+				cropRect := image.Rect(ox, oy, ox+side, oy+side)
+				for i, frame := range g.Image {
+					cropped := image.NewPaletted(image.Rect(0, 0, side, side), frame.Palette)
+					draw.Draw(cropped, cropped.Bounds(), frame, cropRect.Min, draw.Src)
+					g.Image[i] = cropped
+				}
+				g.Config.Width = side
+				g.Config.Height = side
+			}
+		}
+		dst, err := os.Create(destPath)
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to save file"})
+			return
+		}
+		defer dst.Close()
+		if err := gif.EncodeAll(dst, g); err != nil {
+			os.Remove(destPath)
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to encode GIF"})
+			return
+		}
+	} else {
+		// Static image (PNG, JPEG, WebP): decode, crop, re-encode as PNG
+		img, _, err := image.Decode(bytes.NewReader(imgData))
+		if err != nil {
+			w.WriteHeader(400)
+			json.NewEncoder(w).Encode(map[string]string{"error": "invalid image file"})
+			return
+		}
+		b := img.Bounds()
+		w0, h0 := b.Dx(), b.Dy()
+		side := w0
+		if h0 < side {
+			side = h0
+		}
+		if w0 != h0 {
+			ox := (w0 - side) / 2
+			oy := (h0 - side) / 2
+			cropRect := image.Rect(b.Min.X+ox, b.Min.Y+oy, b.Min.X+ox+side, b.Min.Y+oy+side)
+			cropped := image.NewRGBA(image.Rect(0, 0, side, side))
+			draw.Draw(cropped, cropped.Bounds(), img, cropRect.Min, draw.Src)
+			img = cropped
+		}
+		// Re-encode: use original format for JPEG, PNG for everything else
+		dst, err := os.Create(destPath)
+		if err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to save file"})
+			return
+		}
+		defer dst.Close()
+		switch ext {
+		case ".jpg", ".jpeg":
+			err = jpeg.Encode(dst, img, &jpeg.Options{Quality: 90})
+		default:
+			err = png.Encode(dst, img)
+		}
+		if err != nil {
+			os.Remove(destPath)
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to encode image"})
+			return
+		}
 	}
 
 	// Add to manifest
