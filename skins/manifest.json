@@ -22,5 +22,39 @@
     "file": "63.gif",
     "category": "free",
     "rarity": "common"
+  },
+  {
+    "name": "Mita",
+    "file": "Mita.jpg",
+    "category": "free",
+    "rarity": "common"
+  },
+  {
+    "name": "valware's giphy",
+    "file": "custom_rtq8fz5h3sts_giphy.gif",
+    "category": "custom",
+    "rarity": "legendary",
+    "ownerSub": "rtq8fz5h3sts"
+  },
+  {
+    "name": "valware's cherry-blossom-close-up-stockc",
+    "file": "custom_rtq8fz5h3sts_cherry-blossom-close-up-stockc.webp",
+    "category": "custom",
+    "rarity": "legendary",
+    "ownerSub": "rtq8fz5h3sts"
+  },
+  {
+    "name": "valware's cherry-blossom-portal-stockcak",
+    "file": "custom_rtq8fz5h3sts_cherry-blossom-portal-stockcak.webp",
+    "category": "custom",
+    "rarity": "legendary",
+    "ownerSub": "rtq8fz5h3sts"
+  },
+  {
+    "name": "valware's cf59e3c347b8f737ffba3e0b84f4b9",
+    "file": "custom_rtq8fz5h3sts_cf59e3c347b8f737ffba3e0b84f4b9.jpg",
+    "category": "custom",
+    "rarity": "legendary",
+    "ownerSub": "rtq8fz5h3sts"
   }
 ]

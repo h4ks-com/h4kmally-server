@@ -537,11 +537,13 @@ func (ah *AdminHandler) HandleAdminDeleteSkin(w http.ResponseWriter, r *http.Req
 	// Find and remove from manifest
 	found := false
 	var fileName string
+	var deletedOwnerSub string
 	var remaining []skinEntry
 	for _, s := range skins {
 		if s.Name == req.Name {
 			found = true
 			fileName = s.File
+			deletedOwnerSub = s.OwnerSub
 		} else {
 			remaining = append(remaining, s)
 		}
@@ -565,7 +567,13 @@ func (ah *AdminHandler) HandleAdminDeleteSkin(w http.ResponseWriter, r *http.Req
 		os.Remove(filepath.Join(skinsDir, fileName))
 	}
 
-	log.Printf("Admin deleted skin: %s", req.Name)
+	// If this was a custom skin, clean up the owner's profile and restore their slot
+	if deletedOwnerSub != "" {
+		ah.authMgr.UserStore.RemoveCustomSkin(deletedOwnerSub, req.Name)
+		log.Printf("Admin deleted custom skin: %s (owner: %s)", req.Name, deletedOwnerSub)
+	} else {
+		log.Printf("Admin deleted skin: %s", req.Name)
+	}
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
 }
 

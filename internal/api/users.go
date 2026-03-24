@@ -829,6 +829,24 @@ func (us *UserStore) AddCustomSkin(sub, skinName string) {
 	us.save()
 }
 
+// RemoveCustomSkin removes a custom skin from the user's profile and restores their upload slot.
+func (us *UserStore) RemoveCustomSkin(sub, skinName string) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	for i, s := range user.CustomSkins {
+		if s == skinName {
+			user.CustomSkins = append(user.CustomSkins[:i], user.CustomSkins[i+1:]...)
+			user.CustomSkinSlots++ // restore the slot
+			break
+		}
+	}
+	us.save()
+}
+
 // AddCustomSkinSlot increments the user's available custom skin upload slots.
 func (us *UserStore) AddCustomSkinSlot(sub string) {
 	us.mu.Lock()

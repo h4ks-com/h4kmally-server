@@ -1746,12 +1746,15 @@ func (s *Server) HandleUploadCustomSkin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Check that user has an available slot
-	slots := s.AuthMgr.UserStore.GetCustomSkinSlots(session.UserSub)
-	if slots <= 0 {
-		w.WriteHeader(403)
-		w.Write([]byte(`{"error":"no custom skin upload slots available — purchase one from the shop first"}`))
-		return
+	// Check that user has an available slot (admins bypass this)
+	isAdmin := s.AuthMgr.UserStore.IsAdmin(session.UserSub)
+	if !isAdmin {
+		slots := s.AuthMgr.UserStore.GetCustomSkinSlots(session.UserSub)
+		if slots <= 0 {
+			w.WriteHeader(403)
+			w.Write([]byte(`{"error":"no custom skin upload slots available — purchase one from the shop first"}`))
+			return
+		}
 	}
 
 	// Parse multipart form (max 5MB for user uploads)
@@ -1920,8 +1923,10 @@ func (s *Server) HandleUploadCustomSkin(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	// Consume the upload slot and record the skin
-	s.AuthMgr.UserStore.UseCustomSkinSlot(session.UserSub)
+	// Consume the upload slot and record the skin (admins don't use slots)
+	if !isAdmin {
+		s.AuthMgr.UserStore.UseCustomSkinSlot(session.UserSub)
+	}
 	s.AuthMgr.UserStore.AddCustomSkin(session.UserSub, displayName)
 
 	log.Printf("[Skins] User %s uploaded custom skin: %s (%s)", session.UserName, displayName, fileName)
