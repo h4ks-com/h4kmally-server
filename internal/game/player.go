@@ -58,10 +58,10 @@ type Player struct {
 	RevengeWindow map[uint32]uint64
 
 	// ── Active powerup state ──
-	PowerupInventory  map[string]int // type → charges (multiple powerups)
-	SpeedBoostTicks   int    // ticks remaining for active speed boost
-	GhostModeTicks    int    // ticks remaining for ghost mode
-	MassMagnetTicks   int    // ticks remaining for mass magnet
+	PowerupInventory map[string]int // type → charges (multiple powerups)
+	SpeedBoostTicks  int            // ticks remaining for active speed boost
+	GhostModeTicks   int            // ticks remaining for ghost mode
+	MassMagnetTicks  int            // ticks remaining for mass magnet
 
 	// Connection reference (set externally)
 	Conn interface{}
@@ -89,9 +89,9 @@ func NewPlayer(name, skin, effect string) *Player {
 			uint8(rand.IntN(200) + 55),
 			uint8(rand.IntN(200) + 55),
 		},
-		Cells:         make([]*Cell, 0, 16),
+		Cells:          make([]*Cell, 0, 16),
 		SessionNoSplit: true,
-		RevengeWindow: make(map[uint32]uint64),
+		RevengeWindow:  make(map[uint32]uint64),
 	}
 }
 

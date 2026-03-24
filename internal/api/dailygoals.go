@@ -105,12 +105,12 @@ type DailyGoal struct {
 type PowerupType string
 
 const (
-	PowerupVirusLayer    PowerupType = "virus_layer"
-	PowerupSpeedBoost    PowerupType = "speed_boost"
-	PowerupGhostMode     PowerupType = "ghost_mode"
-	PowerupMassMagnet    PowerupType = "mass_magnet"
+	PowerupVirusLayer     PowerupType = "virus_layer"
+	PowerupSpeedBoost     PowerupType = "speed_boost"
+	PowerupGhostMode      PowerupType = "ghost_mode"
+	PowerupMassMagnet     PowerupType = "mass_magnet"
 	PowerupFreezeSplitter PowerupType = "freeze_splitter"
-	PowerupRecombine     PowerupType = "recombine"
+	PowerupRecombine      PowerupType = "recombine"
 )
 
 type PowerupDef struct {
@@ -180,9 +180,9 @@ func GenerateDailyGoals(userSub string, cfg game.Config, botCount int) [3]DailyG
 	rng := &simpleRand{deterministicSeed(userSub, dateKey)}
 
 	// Categorize goals
-	actionGoals := []int{}    // indices into goalDefs: player_kills, virus_shoot, revenge
-	accumGoals := []int{}     // score, pacifist, mass_ejected
-	neutralGoals := []int{}   // games_played
+	actionGoals := []int{}  // indices into goalDefs: player_kills, virus_shoot, revenge
+	accumGoals := []int{}   // score, pacifist, mass_ejected
+	neutralGoals := []int{} // games_played
 	for i, d := range goalDefs {
 		switch d.Type {
 		case GoalPlayerKills, GoalVirusShoot, GoalRevenge:

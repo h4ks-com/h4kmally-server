@@ -68,6 +68,9 @@ type BattleRoyale struct {
 
 	// Callback for broadcasting messages
 	BroadcastFn func(msg string)
+
+	// Whether placement rewards have been granted for the current round
+	RewardsGranted bool
 }
 
 // NewBattleRoyale creates a new inactive BR instance.
@@ -77,7 +80,7 @@ func NewBattleRoyale() *BattleRoyale {
 		CountdownSecs:       10,
 		ZoneDuration:        5 * time.Minute,
 		SuddenDeathDuration: 30 * time.Second,
-		DamagePerTick:       1.5,       // size units per tick (25Hz → ~37.5 size/sec)
+		DamagePerTick:       1.5, // size units per tick (25Hz → ~37.5 size/sec)
 		FinalRadius:         200,
 		Placements:          make(map[uint32]int),
 	}
@@ -99,6 +102,7 @@ func (br *BattleRoyale) Start(mapHalfW float64) {
 	br.EndTime = time.Time{}
 	br.Placements = make(map[uint32]int)
 	br.nextPlace = 0 // will be set when active phase begins
+	br.RewardsGranted = false
 
 	// Zone starts as full map (circle inscribing the square map)
 	br.InitialX = 0
@@ -352,6 +356,38 @@ type BRInfo struct {
 	ZoneRadius    float64 `json:"zoneRadius,omitempty"`
 	TimeRemaining int     `json:"timeRemaining,omitempty"`
 	WinnerName    string  `json:"winnerName,omitempty"`
+}
+
+// GetTopPlacements returns player IDs for 1st, 2nd, and 3rd place.
+// Returns 0 for any placement not assigned. Thread-safe.
+func (br *BattleRoyale) GetTopPlacements() (first, second, third uint32) {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	for pid, place := range br.Placements {
+		switch place {
+		case 1:
+			first = pid
+		case 2:
+			second = pid
+		case 3:
+			third = pid
+		}
+	}
+	return
+}
+
+// MarkRewardsGranted sets the flag to prevent double-granting rewards.
+func (br *BattleRoyale) MarkRewardsGranted() {
+	br.mu.Lock()
+	defer br.mu.Unlock()
+	br.RewardsGranted = true
+}
+
+// AreRewardsGranted returns whether rewards have already been granted.
+func (br *BattleRoyale) AreRewardsGranted() bool {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.RewardsGranted
 }
 
 // currentZone calculates current zone position and radius (must be called under lock).

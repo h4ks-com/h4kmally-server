@@ -37,6 +37,8 @@ var freeSkinNames []string
 var allEffectNames = []string{
 	"neon", "prismatic", "starfield", "lightning",
 	"sakura", "frost", "shadow_aura", "flame", "glitch", "blackhole",
+	"plasma", "fairy_dust", "vortex", "toxic", "crystal",
+	"solar_flare", "void_rift", "autumn", "bubble", "pulse_wave",
 }
 
 func init() {

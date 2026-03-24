@@ -93,8 +93,8 @@ type UserProfile struct {
 	ClanID string `json:"clanId,omitempty"` // clan this user belongs to
 
 	// Custom skins uploaded by this user
-	CustomSkins     []string `json:"customSkins,omitempty"`
-	CustomSkinSlots    int      `json:"customSkinSlots,omitempty"`    // unused upload slots purchased
+	CustomSkins       []string `json:"customSkins,omitempty"`
+	CustomSkinSlots   int      `json:"customSkinSlots,omitempty"`   // unused upload slots purchased
 	ClanCreationSlots int      `json:"clanCreationSlots,omitempty"` // unused clan creation slots purchased
 
 	// Daily goals & powerups

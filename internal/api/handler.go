@@ -1484,6 +1484,9 @@ func (s *Server) TickBattleRoyale() {
 		return
 	}
 
+	// Check state before tick to detect transition to Finished
+	stateBefore := s.BattleRoyale.State
+
 	// Get players from the engine (read lock for the map reference)
 	s.Engine.RLock()
 	players := s.Engine.Players()
@@ -1494,6 +1497,69 @@ func (s *Server) TickBattleRoyale() {
 
 	// Remove killed players' cells from the engine (acquires write lock)
 	s.Engine.KillPlayersForBR(kills)
+
+	// Grant placement rewards when BR just finished
+	if stateBefore == game.BRActive && s.BattleRoyale.State == game.BRFinished && !s.BattleRoyale.AreRewardsGranted() {
+		s.BattleRoyale.MarkRewardsGranted()
+		s.grantBRRewards()
+	}
+}
+
+// grantBRRewards gives powerup packs and skin tokens to BR top-3 finishers.
+// 1st: 2 powerup packs + 2 skin token packs (5 tokens each)
+// 2nd: 1 powerup pack + 1 skin token pack
+// 3rd: 1 skin token pack
+func (s *Server) grantBRRewards() {
+	if s.AuthMgr == nil {
+		return
+	}
+
+	first, second, third := s.BattleRoyale.GetTopPlacements()
+
+	// Build a map of player ID → userSub for authenticated non-bot clients
+	playerToSub := make(map[uint32]string)
+	s.mu.RLock()
+	for client := range s.clients {
+		if client.userSub != "" && client.player != nil {
+			playerToSub[client.player.ID] = client.userSub
+		}
+	}
+	s.mu.RUnlock()
+
+	type reward struct {
+		place      int
+		powerPacks int
+		skinTokens int // each "pack" = 5 skin tokens
+	}
+	rewards := []reward{
+		{1, 2, 10}, // 1st: 2 powerup packs + 2×5 skin tokens
+		{2, 1, 5},  // 2nd: 1 powerup pack + 1×5 skin tokens
+		{3, 0, 5},  // 3rd: 1×5 skin tokens
+	}
+	ids := []uint32{first, second, third}
+
+	for i, pid := range ids {
+		if pid == 0 {
+			continue
+		}
+		sub, ok := playerToSub[pid]
+		if !ok {
+			continue // bot or guest — no reward
+		}
+		r := rewards[i]
+		for j := 0; j < r.powerPacks; j++ {
+			s.AuthMgr.UserStore.GrantPowerupPack(sub)
+		}
+		if r.skinTokens > 0 {
+			s.AuthMgr.UserStore.GrantTokens(sub, r.skinTokens)
+		}
+		log.Printf("[BR] Granted rewards to #%d (%s): %d powerup packs, %d skin tokens",
+			r.place, sub, r.powerPacks, r.skinTokens)
+	}
+
+	if s.BattleRoyale.BroadcastFn != nil {
+		s.BattleRoyale.BroadcastFn("[BR] Prizes awarded! 🏆 1st: 2 powerup + 2 skin packs · 2nd: 1 + 1 · 3rd: 1 skin pack")
+	}
 }
 
 // KickUserSub disconnects all clients associated with a user sub.
@@ -1590,6 +1656,16 @@ var premiumEffects = map[string]bool{
 	"glitch":      true,
 	"blackhole":   true,
 	"trail":       true,
+	"plasma":      true,
+	"fairy_dust":  true,
+	"vortex":      true,
+	"toxic":       true,
+	"crystal":     true,
+	"solar_flare": true,
+	"void_rift":   true,
+	"autumn":      true,
+	"bubble":      true,
+	"pulse_wave":  true,
 }
 
 // GetPremiumEffectNames returns the list of premium effect IDs.
@@ -2087,6 +2163,16 @@ var effectsManifest = []struct {
 	{"glitch", "Glitch", "Digital distortion and RGB shift effect", "premium"},
 	{"blackhole", "Black Hole", "Dark gravity well with warped accretion rings", "premium"},
 	{"trail", "Trail", "Smooth ribbon trail following your cell", "premium"},
+	{"plasma", "Plasma", "Swirling plasma orbs linked by energy arcs", "premium"},
+	{"fairy_dust", "Fairy Dust", "Sparkling golden particles with magical shimmer", "premium"},
+	{"vortex", "Vortex", "Spinning spiral arms pulling particles inward", "premium"},
+	{"toxic", "Toxic", "Bubbling poison clouds and dripping acid", "premium"},
+	{"crystal", "Crystal", "Rotating gemstone facets with prismatic reflections", "premium"},
+	{"solar_flare", "Solar Flare", "Erupting solar prominences and coronal arcs", "premium"},
+	{"void_rift", "Void Rift", "Interdimensional cracks tearing through space", "premium"},
+	{"autumn", "Autumn", "Falling golden and crimson leaves", "premium"},
+	{"bubble", "Bubble", "Floating iridescent soap bubbles", "premium"},
+	{"pulse_wave", "Pulse Wave", "Expanding energy ripples radiating from your cell", "premium"},
 }
 
 // HandleEffectsAccess returns all effects with per-user access info.
