@@ -369,6 +369,16 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, ti
 		if p.GhostModeTicks > 0 {
 			p.GhostModeTicks--
 		}
+		if p.FreezeTicks > 0 {
+			p.FreezeTicks--
+		}
+		if p.RecombineTicks > 0 {
+			p.RecombineTicks--
+			// Actively pull all cells toward mass center for fast recombine
+			if p.Alive && len(p.Cells) > 1 {
+				e.applyRecombinePull(p)
+			}
+		}
 		if p.MassMagnetTicks > 0 {
 			p.MassMagnetTicks--
 			// Pull nearby food and eject cells toward player
@@ -477,7 +487,8 @@ func (e *Engine) SpawnFreezeSplitter(owner *Player, fromX, fromY, toX, toY float
 	v.Y = fromY + ny*owner.Cells[0].Size*1.5
 	v.VX = nx * 1200.0 * BoostDecayRate // very fast projectile
 	v.VY = ny * 1200.0 * BoostDecayRate
-	v.Feeder = owner // attribute to the caster
+	v.Feeder = owner            // attribute to the caster
+	v.IsFreezeSplitter = true   // mark as freeze splitter
 	e.addCell(v)
 	e.virusCount++
 }
@@ -651,8 +662,8 @@ func (e *Engine) moveMovableCells() {
 			}
 			p.mu.Unlock()
 
-			// Frozen players don't move toward mouse at all
-			if !frozen {
+			// Frozen players don't move toward mouse at all (X key or freeze splitter)
+			if !frozen && p.FreezeTicks <= 0 {
 				dx := mx - c.X
 				dy := my - c.Y
 				dist := math.Sqrt(dx*dx + dy*dy)
@@ -950,6 +961,11 @@ func (e *Engine) virusPop(player *Cell, virus *Cell) {
 	}
 	p := player.Owner
 
+	// Freeze splitter: freeze the target player for 3 seconds (75 ticks)
+	if virus.IsFreezeSplitter && virus.Feeder != nil && virus.Feeder != p {
+		p.FreezeTicks = 75 // 3 seconds at 25Hz
+	}
+
 	// Can't split if already at max cells
 	if len(p.Cells) >= e.Cfg.MaxCells {
 		e.eatCell(player, virus)
@@ -1033,30 +1049,70 @@ func (e *Engine) applyDecay() {
 	}
 }
 
-// applyMassMagnet pulls nearby food and eject cells toward a player with the magnet powerup.
+// applyMassMagnet pulls nearby food, eject cells, AND enemy mass toward a player with the magnet powerup.
 func (e *Engine) applyMassMagnet(p *Player) {
-	const magnetRadius = 500.0 // pull range in game units
-	const pullStrength = 8.0   // speed of pull per tick
+	const magnetRadius = 800.0  // increased pull range
+	const pullStrength = 12.0   // stronger pull per tick
+	const enemyPullStrength = 4.0 // gentler pull on enemy cells
 	cx, cy := p.Center()
 	for _, c := range e.cells {
-		if c.Type != CellFood && c.Type != CellEject {
-			continue
+		switch c.Type {
+		case CellFood, CellEject:
+			// Don't pull own eject cells
+			if c.Type == CellEject && c.Owner == p {
+				continue
+			}
+			dx := cx - c.X
+			dy := cy - c.Y
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist < magnetRadius && dist > 1 {
+				nx := dx / dist
+				ny := dy / dist
+				c.X += nx * pullStrength
+				c.Y += ny * pullStrength
+				e.Grid.Move(c)
+			}
+		case CellPlayer:
+			// Pull enemy player cells toward us (not our own)
+			if c.Owner == p || c.Owner == nil {
+				continue
+			}
+			// Don't pull ghost-mode players
+			if c.Owner.GhostModeTicks > 0 {
+				continue
+			}
+			dx := cx - c.X
+			dy := cy - c.Y
+			dist := math.Sqrt(dx*dx + dy*dy)
+			if dist < magnetRadius && dist > 1 {
+				nx := dx / dist
+				ny := dy / dist
+				c.X += nx * enemyPullStrength
+				c.Y += ny * enemyPullStrength
+				e.Grid.Move(c)
+			}
 		}
-		// Don't pull own eject cells
-		if c.Type == CellEject && c.Owner == p {
-			continue
-		}
+	}
+}
+
+// applyRecombinePull pulls all of a player's cells toward their mass center for fast merging.
+func (e *Engine) applyRecombinePull(p *Player) {
+	cx, cy := p.Center()
+	for _, c := range p.Cells {
 		dx := cx - c.X
 		dy := cy - c.Y
 		dist := math.Sqrt(dx*dx + dy*dy)
-		if dist < magnetRadius && dist > 1 {
-			// Pull toward player center
+		if dist > 1 {
+			// Strong pull toward center — 30% of distance per tick
+			pull := dist * 0.3
 			nx := dx / dist
 			ny := dy / dist
-			c.X += nx * pullStrength
-			c.Y += ny * pullStrength
+			c.X += nx * pull
+			c.Y += ny * pull
 			e.Grid.Move(c)
 		}
+		// Keep merge timer cleared during active recombine
+		c.MergeAt = 0
 	}
 }
 

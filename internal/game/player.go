@@ -62,6 +62,8 @@ type Player struct {
 	SpeedBoostTicks  int            // ticks remaining for active speed boost
 	GhostModeTicks   int            // ticks remaining for ghost mode
 	MassMagnetTicks  int            // ticks remaining for mass magnet
+	FreezeTicks      int            // ticks remaining for being frozen by freeze splitter
+	RecombineTicks   int            // ticks remaining for recombine pull-together
 
 	// Connection reference (set externally)
 	Conn interface{}

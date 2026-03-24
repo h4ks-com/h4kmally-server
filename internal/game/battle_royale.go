@@ -71,6 +71,11 @@ type BattleRoyale struct {
 
 	// Whether placement rewards have been granted for the current round
 	RewardsGranted bool
+
+	// Auto-scheduling
+	AutoEnabled  bool          // whether automatic BR rounds are enabled
+	AutoInterval time.Duration // interval between auto-starts (default 1 hour)
+	LastAutoEnd  time.Time     // when the last BR round ended (for scheduling next)
 }
 
 // NewBattleRoyale creates a new inactive BR instance.
@@ -83,6 +88,8 @@ func NewBattleRoyale() *BattleRoyale {
 		DamagePerTick:       1.5, // size units per tick (25Hz → ~37.5 size/sec)
 		FinalRadius:         200,
 		Placements:          make(map[uint32]int),
+		AutoEnabled:         false,
+		AutoInterval:        60 * time.Minute,
 	}
 }
 
@@ -124,11 +131,78 @@ func (br *BattleRoyale) Stop() {
 	br.WinnerName = ""
 }
 
-// IsActive returns true if BR is in countdown or active state (no spawning allowed).
+// IsActive returns true if BR is in countdown or active state.
 func (br *BattleRoyale) IsActive() bool {
 	br.mu.RLock()
 	defer br.mu.RUnlock()
 	return br.State == BRCountdown || br.State == BRActive
+}
+
+// IsActivePhase returns true only during the active (fighting) phase — not countdown.
+func (br *BattleRoyale) IsActivePhase() bool {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.State == BRActive
+}
+
+// EstimatedSecondsRemaining returns an approximate number of seconds until the
+// current BR round ends. Returns 0 if not active.
+func (br *BattleRoyale) EstimatedSecondsRemaining() int {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	switch br.State {
+	case BRCountdown:
+		countdownLeft := br.CountdownSecs - int(time.Since(br.CountdownStart).Seconds())
+		if countdownLeft < 0 {
+			countdownLeft = 0
+		}
+		return countdownLeft + int(br.ZoneDuration.Seconds()) + int(br.SuddenDeathDuration.Seconds())
+	case BRActive:
+		elapsed := time.Since(br.StartTime)
+		total := br.ZoneDuration + br.SuddenDeathDuration
+		remaining := total - elapsed
+		if remaining < 0 {
+			return 0
+		}
+		return int(remaining.Seconds())
+	default:
+		return 0
+	}
+}
+
+// SetAutoConfig updates auto-scheduling settings. Thread-safe.
+func (br *BattleRoyale) SetAutoConfig(enabled bool, intervalMinutes int) {
+	br.mu.Lock()
+	defer br.mu.Unlock()
+	br.AutoEnabled = enabled
+	if intervalMinutes > 0 {
+		br.AutoInterval = time.Duration(intervalMinutes) * time.Minute
+	}
+}
+
+// GetAutoConfig returns the current auto-scheduling config. Thread-safe.
+func (br *BattleRoyale) GetAutoConfig() (enabled bool, intervalMinutes int) {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	return br.AutoEnabled, int(br.AutoInterval.Minutes())
+}
+
+// CheckAutoStart returns true if it's time to auto-start a new BR round.
+// Should be called from the tick loop.
+func (br *BattleRoyale) CheckAutoStart() bool {
+	br.mu.RLock()
+	defer br.mu.RUnlock()
+	if !br.AutoEnabled {
+		return false
+	}
+	if br.State != BRInactive {
+		return false
+	}
+	if br.LastAutoEnd.IsZero() {
+		// First auto round — start immediately
+		return true
+	}
+	return time.Since(br.LastAutoEnd) >= br.AutoInterval
 }
 
 // GetPlacement returns the placement for a player (0 if not eliminated yet).
@@ -279,6 +353,7 @@ func (br *BattleRoyale) Tick(players map[uint32]*Player) []uint32 {
 		// Auto-reset after 15 seconds
 		if time.Since(br.EndTime) > 15*time.Second {
 			br.State = BRInactive
+			br.LastAutoEnd = time.Now()
 			if br.BroadcastFn != nil {
 				br.BroadcastFn("[BR] Battle Royale has ended.")
 			}

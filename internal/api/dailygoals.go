@@ -122,12 +122,12 @@ type PowerupDef struct {
 }
 
 var PowerupDefs = []PowerupDef{
-	{PowerupVirusLayer, "Virus Layer", "Drop viruses behind you", 5, 1},
-	{PowerupSpeedBoost, "Speed Boost", "Short burst of speed (~2s)", 3, 2},
-	{PowerupGhostMode, "Ghost Mode", "Pass through cells for ~4s", 1, 3},
-	{PowerupMassMagnet, "Mass Magnet", "Pull nearby pellets & mass for ~5s", 2, 4},
-	{PowerupFreezeSplitter, "Freeze Splitter", "Fire a projectile that force-splits an enemy", 3, 5},
-	{PowerupRecombine, "Recombine", "Instantly merge all your split cells", 1, 6},
+	{PowerupVirusLayer, "Virus Layer", "Drop a virus behind your farthest blob", 5, 1},
+	{PowerupSpeedBoost, "Speed Boost", "6 seconds of 2x speed", 3, 2},
+	{PowerupGhostMode, "Ghost Mode", "Pass through cells for 6s", 1, 3},
+	{PowerupMassMagnet, "Mass Magnet", "Pull nearby mass & enemies for 5s", 2, 4},
+	{PowerupFreezeSplitter, "Freeze Splitter", "Shoot a virus that splits & freezes an enemy for 3s", 3, 5},
+	{PowerupRecombine, "Recombine", "Rapidly merge all your split cells", 1, 6},
 }
 
 // ── User Daily State (persisted) ─────────────────────────────
