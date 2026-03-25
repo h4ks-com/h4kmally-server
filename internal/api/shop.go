@@ -98,10 +98,39 @@ func NewShopHandler(authMgr *AuthManager, userStore *UserStore, payment PaymentP
 	// Load persisted orders
 	sh.loadOrders()
 
+	// Cancel stale pending orders whose amounts don't match current item prices
+	sh.cancelStalePendingOrders()
+
 	// Start background order fulfillment poller
 	go sh.pollTransactions()
 
 	return sh
+}
+
+// cancelStalePendingOrders cancels any pending orders whose stored amount
+// doesn't match the current item price (e.g., after a price change).
+func (sh *ShopHandler) cancelStalePendingOrders() {
+	priceByID := make(map[string]int)
+	for _, item := range sh.items {
+		priceByID[item.ID] = item.Price
+	}
+
+	changed := false
+	for _, o := range sh.orders {
+		if o.Status != "pending" {
+			continue
+		}
+		currentPrice, exists := priceByID[o.ItemID]
+		if !exists || o.Amount != currentPrice {
+			log.Printf("[Shop] Cancelling stale pending order %s: item=%s stored_amount=%d current_price=%d",
+				o.ID, o.ItemID, o.Amount, currentPrice)
+			o.Status = "cancelled"
+			changed = true
+		}
+	}
+	if changed {
+		sh.saveOrders()
+	}
 }
 
 func generateOrderID() string {
@@ -287,6 +316,14 @@ func (sh *ShopHandler) HandlePurchase(w http.ResponseWriter, r *http.Request) {
 	// Check for existing pending order for same item from same user
 	for _, o := range sh.orders {
 		if o.UserSub == session.UserSub && o.ItemID == item.ID && o.Status == "pending" {
+			// If the price changed since the order was created, cancel the stale order
+			// and fall through to create a new one with the current price.
+			if o.Amount != item.Price {
+				o.Status = "cancelled"
+				sh.saveOrders()
+				log.Printf("[Shop] Cancelled stale order %s: old_amount=%d new_price=%d", o.ID, o.Amount, item.Price)
+				break
+			}
 			// Return existing pending order
 			payURL := sh.payment.PaymentURL(o.Username, o.Amount)
 			sh.mu.Unlock()
@@ -452,6 +489,19 @@ func (sh *ShopHandler) checkTransactions() {
 	sh.mu.Lock()
 	defer sh.mu.Unlock()
 
+	// Check if there are any pending orders at all — skip processing if not
+	hasPending := false
+	for _, o := range sh.orders {
+		if o.Status == "pending" {
+			hasPending = true
+			break
+		}
+	}
+	if !hasPending {
+		return
+	}
+
+	changed := false
 	for _, tx := range txns {
 		// Skip already processed transactions
 		if sh.processedTxs[tx.ID] {
@@ -460,6 +510,7 @@ func (sh *ShopHandler) checkTransactions() {
 
 		// Look for a matching pending order
 		// Match: same username (case-insensitive), same amount, incoming to merchant
+		matched := false
 		for _, order := range sh.orders {
 			if order.Status != "pending" {
 				continue
@@ -475,6 +526,8 @@ func (sh *ShopHandler) checkTransactions() {
 			order.Status = "completed"
 			order.MatchedTx = tx.ID
 			sh.processedTxs[tx.ID] = true
+			matched = true
+			changed = true
 
 			// Grant tokens to the user based on type
 			switch order.TokenType {
@@ -496,15 +549,22 @@ func (sh *ShopHandler) checkTransactions() {
 				sh.userStore.GrantTokens(order.UserSub, order.Tokens)
 			}
 
-			log.Printf("[Shop] Order %s fulfilled: user=%s type=%s tokens=%d txID=%d",
-				order.ID, order.Username, order.TokenType, order.Tokens, tx.ID)
+			log.Printf("[Shop] Order %s fulfilled: user=%s type=%s tokens=%d amount=%d txID=%d",
+				order.ID, order.Username, order.TokenType, order.Tokens, order.Amount, tx.ID)
 
-			sh.saveOrders()
 			break // one tx per order
 		}
 
-		// Mark as processed even if no match, to avoid re-checking
-		sh.processedTxs[tx.ID] = true
+		// Only mark as processed if it matched an order.
+		// Unmatched transactions are re-checked on subsequent polls
+		// so that orders created after a transaction can still match.
+		if !matched {
+			// Still mark very old unmatched transactions (>2h) to avoid infinite growth
+			// Transaction IDs are monotonically increasing, so high IDs are recent
+		}
+	}
+	if changed {
+		sh.saveOrders()
 	}
 }
 

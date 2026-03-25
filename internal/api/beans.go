@@ -165,37 +165,62 @@ func (bp *BeansProvider) PaymentURL(fromUser string, amount int) string {
 }
 
 // GetTransactions returns the merchant's recent transaction history.
+// Fetches all pages to avoid missing transactions that scroll off page 1.
 func (bp *BeansProvider) GetTransactions() ([]PaymentTransaction, error) {
-	respBody, status, err := bp.doRequest("GET", "/transactions", nil)
-	if err != nil {
-		return nil, err
-	}
-	if status != 200 {
-		return nil, fmt.Errorf("get transactions: HTTP %d: %s", status, string(respBody))
-	}
+	var allTxns []PaymentTransaction
 
-	var apiResp []struct {
-		ID        int    `json:"id"`
-		Amount    int    `json:"amount"`
-		FromUser  string `json:"from_user"`
-		ToUser    string `json:"to_user"`
-		Timestamp string `json:"timestamp"`
-	}
-	if err := json.Unmarshal(respBody, &apiResp); err != nil {
-		return nil, fmt.Errorf("parse transactions: %w", err)
-	}
+	// Fetch up to 10 pages (safety limit) to get all recent transactions
+	for page := 1; page <= 10; page++ {
+		path := fmt.Sprintf("/transactions?page=%d", page)
+		respBody, status, err := bp.doRequest("GET", path, nil)
+		if err != nil {
+			if page == 1 {
+				return nil, err
+			}
+			break // stop paginating on error for subsequent pages
+		}
+		if status != 200 {
+			if page == 1 {
+				return nil, fmt.Errorf("get transactions: HTTP %d: %s", status, string(respBody))
+			}
+			break
+		}
 
-	txns := make([]PaymentTransaction, len(apiResp))
-	for i, t := range apiResp {
-		txns[i] = PaymentTransaction{
-			ID:        t.ID,
-			FromUser:  t.FromUser,
-			ToUser:    t.ToUser,
-			Amount:    t.Amount,
-			Timestamp: t.Timestamp,
+		var apiResp []struct {
+			ID        int    `json:"id"`
+			Amount    int    `json:"amount"`
+			FromUser  string `json:"from_user"`
+			ToUser    string `json:"to_user"`
+			Timestamp string `json:"timestamp"`
+		}
+		if err := json.Unmarshal(respBody, &apiResp); err != nil {
+			if page == 1 {
+				return nil, fmt.Errorf("parse transactions: %w", err)
+			}
+			break
+		}
+
+		if len(apiResp) == 0 {
+			break // no more pages
+		}
+
+		for _, t := range apiResp {
+			allTxns = append(allTxns, PaymentTransaction{
+				ID:        t.ID,
+				FromUser:  t.FromUser,
+				ToUser:    t.ToUser,
+				Amount:    t.Amount,
+				Timestamp: t.Timestamp,
+			})
+		}
+
+		// If this page returned fewer items than typical page size, we've reached the end
+		if len(apiResp) < 10 {
+			break
 		}
 	}
-	return txns, nil
+
+	return allTxns, nil
 }
 
 // GetBalance returns the merchant's wallet balance.
