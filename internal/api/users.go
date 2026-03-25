@@ -925,6 +925,194 @@ func (us *UserStore) GetClanCreationSlots(sub string) int {
 	return user.ClanCreationSlots
 }
 
+// ── Marketplace helpers ──────────────────────────────────────────────────────
+
+// MarketableItem represents an item a user can list on the marketplace.
+type MarketableItem struct {
+	ItemType string `json:"itemType"` // "skin_token", "effect_token", "powerup"
+	ItemKey  string `json:"itemKey"`  // skin/effect name or powerup type string
+	Name     string `json:"name"`     // human-readable display name
+	Amount   int    `json:"amount"`   // how many the user currently has
+}
+
+// GetMarketableItems returns all items the user has available to list on the marketplace.
+func (us *UserStore) GetMarketableItems(sub string) []MarketableItem {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return nil
+	}
+	var items []MarketableItem
+	for skinName, count := range user.SkinTokens {
+		if count > 0 {
+			items = append(items, MarketableItem{
+				ItemType: "skin_token",
+				ItemKey:  skinName,
+				Name:     skinName + " skin token",
+				Amount:   count,
+			})
+		}
+	}
+	for effectName, count := range user.EffectTokens {
+		if count > 0 {
+			items = append(items, MarketableItem{
+				ItemType: "effect_token",
+				ItemKey:  effectName,
+				Name:     effectName + " effect token",
+				Amount:   count,
+			})
+		}
+	}
+	if user.DailyState != nil {
+		for pType, count := range user.DailyState.Powerups {
+			if count > 0 {
+				def := GetPowerupDef(pType)
+				name := string(pType)
+				if def != nil {
+					name = def.Label
+				}
+				items = append(items, MarketableItem{
+					ItemType: "powerup",
+					ItemKey:  string(pType),
+					Name:     name + " powerup",
+					Amount:   count,
+				})
+			}
+		}
+	}
+	return items
+}
+
+// DeductSkinTokens atomically removes qty skin tokens for a specific skin.
+// Returns false if the user doesn't have enough.
+func (us *UserStore) DeductSkinTokens(sub, skinName string, qty int) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.SkinTokens == nil || user.SkinTokens[skinName] < qty {
+		return false
+	}
+	user.SkinTokens[skinName] -= qty
+	if user.SkinTokens[skinName] == 0 {
+		delete(user.SkinTokens, skinName)
+	}
+	us.save()
+	return true
+}
+
+// DeductEffectTokens atomically removes qty effect tokens for a specific effect.
+// Returns false if the user doesn't have enough.
+func (us *UserStore) DeductEffectTokens(sub, effectName string, qty int) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.EffectTokens == nil || user.EffectTokens[effectName] < qty {
+		return false
+	}
+	user.EffectTokens[effectName] -= qty
+	if user.EffectTokens[effectName] == 0 {
+		delete(user.EffectTokens, effectName)
+	}
+	us.save()
+	return true
+}
+
+// DeductPowerupCharges atomically removes qty charges for a specific powerup type.
+// Returns false if the user doesn't have enough.
+func (us *UserStore) DeductPowerupCharges(sub string, pType PowerupType, qty int) bool {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return false
+	}
+	if user.DailyState == nil || user.DailyState.Powerups == nil || user.DailyState.Powerups[pType] < qty {
+		return false
+	}
+	user.DailyState.Powerups[pType] -= qty
+	if user.DailyState.Powerups[pType] == 0 {
+		delete(user.DailyState.Powerups, pType)
+	}
+	us.save()
+	return true
+}
+
+// GrantSpecificSkinTokens adds qty tokens for a specific skin to the user and checks for unlock.
+func (us *UserStore) GrantSpecificSkinTokens(sub, skinName string, qty int) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.SkinTokens == nil {
+		user.SkinTokens = make(map[string]int)
+	}
+	user.SkinTokens[skinName] += qty
+	if user.SkinTokens[skinName] >= TokensPerSkinUnlock {
+		if !skinInSlice(user.UnlockedSkins, skinName) {
+			user.UnlockedSkins = append(user.UnlockedSkins, skinName)
+		}
+	}
+	us.save()
+}
+
+// GrantSpecificEffectTokens adds qty tokens for a specific effect to the user and checks for unlock.
+func (us *UserStore) GrantSpecificEffectTokens(sub, effectName string, qty int) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.EffectTokens == nil {
+		user.EffectTokens = make(map[string]int)
+	}
+	user.EffectTokens[effectName] += qty
+	if user.EffectTokens[effectName] >= TokensPerEffectUnlock {
+		if !stringInSlice(user.UnlockedEffects, effectName) {
+			user.UnlockedEffects = append(user.UnlockedEffects, effectName)
+		}
+	}
+	us.save()
+}
+
+// GrantPowerupCharges adds qty charges for a specific powerup type to the user.
+func (us *UserStore) GrantPowerupCharges(sub string, pType PowerupType, qty int) {
+	us.mu.Lock()
+	defer us.mu.Unlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return
+	}
+	if user.DailyState == nil {
+		user.DailyState = &UserDailyState{}
+	}
+	if user.DailyState.Powerups == nil {
+		user.DailyState.Powerups = make(map[PowerupType]int)
+	}
+	user.DailyState.Powerups[pType] += qty
+	us.save()
+}
+
+// GetUsername returns the display username for a user sub.
+func (us *UserStore) GetUsername(sub string) string {
+	us.mu.RLock()
+	defer us.mu.RUnlock()
+	user, exists := us.users[sub]
+	if !exists {
+		return ""
+	}
+	return user.Name
+}
+
 func skinInSlice(slice []string, s string) bool {
 	for _, v := range slice {
 		if v == s {

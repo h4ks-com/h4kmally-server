@@ -111,8 +111,9 @@ func main() {
 	// Wire up PremiumEffectNames so token granting can pick random premium effects
 	userStore.PremiumEffectNames = api.GetPremiumEffectNames
 
-	// Payment provider + Shop (optional — enabled when BEANS_API_TOKEN is set)
+	// Payment provider + Shop + Marketplace (optional — enabled when BEANS_API_TOKEN is set)
 	var shopHandler *api.ShopHandler
+	var marketplaceHandler *api.MarketplaceHandler
 	beansToken := os.Getenv("BEANS_API_TOKEN")
 	beansSite := os.Getenv("BEANS_SITE_URL")
 	beansMerchant := os.Getenv("BEANS_MERCHANT")
@@ -122,9 +123,12 @@ func main() {
 		}
 		payment := api.NewBeansProvider(beansSite, beansToken, beansMerchant)
 		shopHandler = api.NewShopHandler(authMgr, userStore, payment)
-		log.Printf("Shop enabled: payment=%s merchant=%s", payment.Name(), beansMerchant)
+		marketplaceMaxPrice := envInt("MARKETPLACE_MAX_PRICE", 100)
+		marketplacePayment := api.NewBeansProvider(beansSite, beansToken, beansMerchant)
+		marketplaceHandler = api.NewMarketplaceHandler(authMgr, userStore, marketplacePayment, marketplaceMaxPrice)
+		log.Printf("Shop + Marketplace enabled: payment=%s merchant=%s maxPrice=%d", payment.Name(), beansMerchant, marketplaceMaxPrice)
 	} else {
-		log.Println("Shop disabled (set BEANS_API_TOKEN and BEANS_MERCHANT to enable)")
+		log.Println("Shop + Marketplace disabled (set BEANS_API_TOKEN and BEANS_MERCHANT to enable)")
 	}
 
 	// HTTP routes
@@ -224,6 +228,21 @@ func main() {
 		mux.HandleFunc("/api/shop/purchase", shopHandler.HandlePurchase)
 		mux.HandleFunc("/api/shop/orders", shopHandler.HandleOrders)
 		mux.HandleFunc("/api/shop/cancel", shopHandler.HandleCancelOrder)
+	}
+
+	// Marketplace endpoints (only if payment provider is configured)
+	if marketplaceHandler != nil {
+		mux.HandleFunc("/api/marketplace/listings", marketplaceHandler.HandleListings)
+		mux.HandleFunc("/api/marketplace/my-items", marketplaceHandler.HandleMyItems)
+		mux.HandleFunc("/api/marketplace/my-listings", marketplaceHandler.HandleMyListings)
+		mux.HandleFunc("/api/marketplace/my-purchases", marketplaceHandler.HandleMyPurchases)
+		mux.HandleFunc("/api/marketplace/list", marketplaceHandler.HandleCreateListing)
+		mux.HandleFunc("/api/marketplace/cancel", marketplaceHandler.HandleCancelListing)
+		mux.HandleFunc("/api/marketplace/buy", marketplaceHandler.HandleBuyListing)
+		mux.HandleFunc("/api/marketplace/accept-trade", marketplaceHandler.HandleAcceptTrade)
+		// Admin marketplace routes
+		mux.HandleFunc("/api/admin/marketplace", marketplaceHandler.HandleAdminListings)
+		mux.HandleFunc("/api/admin/marketplace/reverse", marketplaceHandler.HandleAdminReverse)
 	}
 
 	// CORS middleware for all routes

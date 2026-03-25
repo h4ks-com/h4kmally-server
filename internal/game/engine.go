@@ -487,8 +487,8 @@ func (e *Engine) SpawnFreezeSplitter(owner *Player, fromX, fromY, toX, toY float
 	v.Y = fromY + ny*owner.Cells[0].Size*1.5
 	v.VX = nx * 1200.0 * BoostDecayRate // very fast projectile
 	v.VY = ny * 1200.0 * BoostDecayRate
-	v.Feeder = owner            // attribute to the caster
-	v.IsFreezeSplitter = true   // mark as freeze splitter
+	v.Feeder = owner          // attribute to the caster
+	v.IsFreezeSplitter = true // mark as freeze splitter
 	e.addCell(v)
 	e.virusCount++
 }
@@ -1051,8 +1051,8 @@ func (e *Engine) applyDecay() {
 
 // applyMassMagnet pulls nearby food, eject cells, AND enemy mass toward a player with the magnet powerup.
 func (e *Engine) applyMassMagnet(p *Player) {
-	const magnetRadius = 800.0  // increased pull range
-	const pullStrength = 12.0   // stronger pull per tick
+	const magnetRadius = 800.0    // increased pull range
+	const pullStrength = 12.0     // stronger pull per tick
 	const enemyPullStrength = 4.0 // gentler pull on enemy cells
 	cx, cy := p.Center()
 	for _, c := range e.cells {

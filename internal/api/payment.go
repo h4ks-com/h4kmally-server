@@ -25,6 +25,10 @@ type PaymentProvider interface {
 
 	// GetBalance returns the merchant's current balance.
 	GetBalance() (int, error)
+
+	// SendTransfer sends beans from the merchant account directly to a recipient user.
+	// Used to pay out sellers after a marketplace sale, or to refund buyers on reversal.
+	SendTransfer(toUser string, amount int) error
 }
 
 // GiftLink represents a redeemable gift created by the merchant.
