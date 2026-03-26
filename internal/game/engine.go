@@ -1,6 +1,7 @@
 package game
 
 import (
+	"log"
 	"math"
 	"math/rand/v2"
 	"sort"
@@ -121,11 +122,20 @@ func (e *Engine) removePlayerLocked(id uint32) {
 	if !ok {
 		return
 	}
-	// Remove all cells
+	// Remove all cells tracked in the player's Cells slice
 	for _, c := range p.Cells {
 		e.Grid.Remove(c)
 		e.removed = append(e.removed, c.ID)
 		delete(e.cells, c.ID)
+	}
+	// Also remove any orphaned cells in e.cells owned by this player
+	// (e.g. eject cells, which have Owner set but aren't in p.Cells).
+	for cid, c := range e.cells {
+		if c.Owner == p {
+			e.Grid.Remove(c)
+			e.removed = append(e.removed, cid)
+			delete(e.cells, cid)
+		}
 	}
 	p.Cells = nil
 	p.Alive = false
@@ -168,6 +178,14 @@ func (e *Engine) KillPlayersForBR(ids []uint32) {
 			e.Grid.Remove(c)
 			e.removed = append(e.removed, c.ID)
 			delete(e.cells, c.ID)
+		}
+		// Also remove orphaned cells owned by this player (e.g. eject cells)
+		for cid, c := range e.cells {
+			if c.Owner == p {
+				e.Grid.Remove(c)
+				e.removed = append(e.removed, cid)
+				delete(e.cells, cid)
+			}
 		}
 		p.Cells = nil
 		p.Alive = false
@@ -422,6 +440,14 @@ func (e *Engine) Tick() (updated []*Cell, eaten []EatEvent, removed []uint32, ti
 		if c.Born {
 			e.updated = append(e.updated, c)
 			c.Born = false
+		}
+	}
+
+	// 10. Periodic grid consistency sweep (every 125 ticks ≈ 5s at 25Hz).
+	// Removes ghost cells that exist in the grid but not in e.cells.
+	if e.tickNum%125 == 0 {
+		if n := e.SweepGridOrphans(); n > 0 {
+			log.Printf("[Engine] Swept %d ghost cell(s) from grid", n)
 		}
 	}
 
@@ -768,6 +794,9 @@ func (e *Engine) resolveCollisions() {
 	for k := range toRemove {
 		delete(toRemove, k)
 	}
+	// Also track cell pointers for removal (not just IDs) so we can
+	// Grid.Remove cells that might only exist in the grid (orphans).
+	toRemoveCells := make(map[uint32]*Cell, 64)
 
 	for _, a := range active {
 		if toRemove[a.ID] {
@@ -795,6 +824,7 @@ func (e *Engine) resolveCollisions() {
 				if CanEatFood(a, b) {
 					e.eatCell(a, b)
 					toRemove[b.ID] = true
+					toRemoveCells[b.ID] = b
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
 				}
 				continue
@@ -849,6 +879,7 @@ func (e *Engine) resolveCollisions() {
 					}
 					e.virusPop(a, b)
 					toRemove[b.ID] = true
+					toRemoveCells[b.ID] = b
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
 				}
 				continue
@@ -866,6 +897,7 @@ func (e *Engine) resolveCollisions() {
 						a.Feeder = b.Owner // track who fed the virus
 					}
 					toRemove[b.ID] = true
+					toRemoveCells[b.ID] = b
 					e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
 					feedsToSplit := int(math.Round((e.Cfg.VirusMaxSize - e.Cfg.VirusSize) / e.Cfg.VirusFeedSize))
 					if a.FeedCount >= feedsToSplit {
@@ -881,6 +913,7 @@ func (e *Engine) resolveCollisions() {
 						b.Feeder = a.Owner // track who fed the virus
 					}
 					toRemove[a.ID] = true
+					toRemoveCells[a.ID] = a
 					e.eaten = append(e.eaten, EatEvent{b.ID, a.ID})
 					feedsToSplit := int(math.Round((e.Cfg.VirusMaxSize - e.Cfg.VirusSize) / e.Cfg.VirusFeedSize))
 					if b.FeedCount >= feedsToSplit {
@@ -927,17 +960,17 @@ func (e *Engine) resolveCollisions() {
 				}
 				e.eatCell(a, b)
 				toRemove[b.ID] = true
+				toRemoveCells[b.ID] = b
 				e.eaten = append(e.eaten, EatEvent{a.ID, b.ID})
 			}
 		}
 	}
 
-	// Remove eaten cells
-	for id := range toRemove {
-		c := e.cells[id]
-		if c == nil {
-			continue
-		}
+	// Remove eaten cells.
+	// Use the *Cell pointer from the nearby query (stored in toRemoveCells)
+	// so Grid.Remove works even if the cell was already removed from e.cells
+	// (e.g. grid-only orphans from stale gridIdx).
+	for id, c := range toRemoveCells {
 		if c.Type == CellFood {
 			e.foodCount--
 		} else if c.Type == CellVirus {
@@ -972,6 +1005,11 @@ func (e *Engine) pushApart(a, b *Cell, dist float64) {
 	a.Y += ny * pushA
 	b.X -= nx * pushB
 	b.Y -= ny * pushB
+	// Update grid positions so gridIdx stays in sync.
+	// Without this, Grid.Remove() can silently fail if cells
+	// cross a grid bucket boundary, creating permanent ghost cells.
+	e.Grid.Move(a)
+	e.Grid.Move(b)
 }
 
 func (e *Engine) eatCell(eater, eaten *Cell) {
@@ -1280,4 +1318,34 @@ func (e *Engine) PlayerCount() int {
 	e.mu.RLock()
 	defer e.mu.RUnlock()
 	return len(e.players)
+}
+
+// SweepGridOrphans scans all grid buckets for cells that exist in the spatial
+// grid but not in e.cells (ghost cells). Any orphans found are removed from the
+// grid and added to the removed list so clients stop rendering them.
+// This is a safety net — ideally no orphans ever exist, but if any slip through
+// due to edge cases, this periodic sweep cleans them up.
+// Call under the engine lock (e.g. from Tick), typically every few seconds.
+func (e *Engine) SweepGridOrphans() int {
+	cleaned := 0
+	for i := range e.Grid.buckets {
+		bucket := &e.Grid.buckets[i]
+		j := 0
+		for j < len(bucket.cells) {
+			c := bucket.cells[j]
+			if _, exists := e.cells[c.ID]; !exists {
+				// Ghost cell: in grid but not in e.cells — remove it
+				last := len(bucket.cells) - 1
+				bucket.cells[j] = bucket.cells[last]
+				bucket.cells[last] = nil
+				bucket.cells = bucket.cells[:last]
+				e.removed = append(e.removed, c.ID)
+				cleaned++
+				// Don't increment j — the swapped element needs checking
+			} else {
+				j++
+			}
+		}
+	}
+	return cleaned
 }
