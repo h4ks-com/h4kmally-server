@@ -650,6 +650,101 @@ func GetPremiumSkinNames() []string {
 	return names
 }
 
+// HandleAdminEditSkin edits an existing skin's name, category, and/or rarity.
+// POST /api/admin/edit-skin { "oldName": "...", "name": "...", "category": "...", "rarity": "..." }
+func (ah *AdminHandler) HandleAdminEditSkin(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "POST" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+	if ah.requireAdmin(w, r) == nil {
+		return
+	}
+
+	var req struct {
+		OldName  string `json:"oldName"`
+		Name     string `json:"name"`
+		Category string `json:"category"`
+		Rarity   string `json:"rarity"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.OldName == "" {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"oldName is required"}`))
+		return
+	}
+
+	skins, err := loadManifest()
+	if err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to load manifest"})
+		return
+	}
+
+	idx := -1
+	for i := range skins {
+		if skins[i].Name == req.OldName {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		w.WriteHeader(404)
+		json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("skin %q not found", req.OldName)})
+		return
+	}
+
+	newName := req.Name
+	if newName == "" {
+		newName = skins[idx].Name
+	}
+
+	// If name changed, rename the file on disk and check for conflicts
+	if newName != skins[idx].Name {
+		// Check name conflict
+		for i, s := range skins {
+			if i != idx && s.Name == newName {
+				w.WriteHeader(409)
+				json.NewEncoder(w).Encode(map[string]string{"error": fmt.Sprintf("skin name %q already exists", newName)})
+				return
+			}
+		}
+		// Rename file: keep same extension
+		ext := filepath.Ext(skins[idx].File)
+		newFile := newName + ext
+		oldPath := filepath.Join(skinsDir, skins[idx].File)
+		newPath := filepath.Join(skinsDir, newFile)
+		if err := os.Rename(oldPath, newPath); err != nil {
+			w.WriteHeader(500)
+			json.NewEncoder(w).Encode(map[string]string{"error": "failed to rename file: " + err.Error()})
+			return
+		}
+		skins[idx].Name = newName
+		skins[idx].File = newFile
+	}
+
+	if req.Category != "" {
+		skins[idx].Category = req.Category
+	}
+	if req.Rarity != "" {
+		skins[idx].Rarity = req.Rarity
+	}
+
+	if err := saveManifest(skins); err != nil {
+		w.WriteHeader(500)
+		json.NewEncoder(w).Encode(map[string]string{"error": "failed to save manifest"})
+		return
+	}
+
+	log.Printf("Admin edited skin %q -> name=%s category=%s rarity=%s", req.OldName, skins[idx].Name, skins[idx].Category, skins[idx].Rarity)
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "skin": skins[idx]})
+}
+
 // HandleAdminBRStart starts a Battle Royale event.
 // POST /api/admin/br/start
 func (ah *AdminHandler) HandleAdminBRStart(w http.ResponseWriter, r *http.Request) {

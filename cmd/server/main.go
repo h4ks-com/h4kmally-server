@@ -163,6 +163,7 @@ func main() {
 	mux.HandleFunc("/api/admin/upload-skin", adminHandler.HandleAdminUploadSkin)
 	mux.HandleFunc("/api/admin/delete-skin", adminHandler.HandleAdminDeleteSkin)
 	mux.HandleFunc("/api/admin/set-skin-level", adminHandler.HandleAdminSetSkinLevel)
+	mux.HandleFunc("/api/admin/edit-skin", adminHandler.HandleAdminEditSkin)
 	mux.HandleFunc("/api/admin/br/start", adminHandler.HandleAdminBRStart)
 	mux.HandleFunc("/api/admin/br/stop", adminHandler.HandleAdminBRStop)
 	mux.HandleFunc("/api/admin/br/status", adminHandler.HandleAdminBRStatus)
