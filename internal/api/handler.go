@@ -86,6 +86,10 @@ type Client struct {
 	multiRespawn    int64           // unix time to auto-respawn multi (0 = not pending)
 	primaryRespawn  int64           // unix time to auto-respawn primary (0 = not pending)
 
+	// Tanking: multiple clients controlling one shared player
+	inTank      bool              // true when this client is in a tank session
+	tankSession *game.TankSession // current tank session (nil if not tanking)
+
 	// Inactivity tracking: last time any message was received from this client.
 	// Accessed atomically (unix nanoseconds). If no activity for 10s, the
 	// server force-disconnects the client to prevent ghost cells.
@@ -99,6 +103,7 @@ type Server struct {
 	ChatBridge   *ChatBridge
 	ClanStore    *ClanStore
 	BattleRoyale *game.BattleRoyale
+	TankMgr      *game.TankManager
 	clients      map[*Client]bool
 	mu           sync.RWMutex
 }
@@ -205,10 +210,21 @@ func (c *Client) handleConnection() {
 		delete(c.server.clients, c)
 		c.server.mu.Unlock()
 
-		if c.player != nil {
-			c.engine.QueueRemovePlayer(c.player.ID)
-			log.Printf("Player %q (ID %d) disconnected", c.player.Name, c.player.ID)
+		// Handle tank disconnect
+		c.mu.Lock()
+		inTank := c.inTank
+		tankSess := c.tankSession
+		c.mu.Unlock()
+		if inTank && tankSess != nil {
+			c.server.handleTankMemberDisconnect(c, tankSess)
+		} else {
+			// Normal disconnect: remove player
+			if c.player != nil {
+				c.engine.QueueRemovePlayer(c.player.ID)
+				log.Printf("Player %q (ID %d) disconnected", c.player.Name, c.player.ID)
+			}
 		}
+
 		// Clean up multibox player
 		c.mu.Lock()
 		mp := c.multiPlayer
@@ -439,10 +455,19 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		if !ok {
 			return
 		}
-		// Route mouse to the active multibox slot
-		activePlayer := c.activePlayer()
-		if activePlayer != nil {
-			activePlayer.SetMouse(float64(x), float64(y))
+		// Tank mode: route mouse to tank session for averaging
+		c.mu.Lock()
+		inTank := c.inTank
+		tankSess := c.tankSession
+		c.mu.Unlock()
+		if inTank && tankSess != nil {
+			tankSess.UpdateMemberMouse(c, float64(x), float64(y))
+		} else {
+			// Regular: route mouse to the active multibox slot
+			activePlayer := c.activePlayer()
+			if activePlayer != nil {
+				activePlayer.SetMouse(float64(x), float64(y))
+			}
 		}
 		c.mu.Lock()
 		if c.spectating {
@@ -453,15 +478,33 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		c.mu.Unlock()
 
 	case protocol.OpSplit:
-		p := c.activePlayer()
+		p := c.tankOrActivePlayer()
 		if p != nil && p.Alive {
-			p.QueueSplit()
+			c.mu.Lock()
+			inTank := c.inTank
+			tankSess := c.tankSession
+			c.mu.Unlock()
+			if inTank && tankSess != nil {
+				mx, my := tankSess.GetMemberMouse(c)
+				p.QueueSplitAt(mx, my)
+			} else {
+				p.QueueSplit()
+			}
 		}
 
 	case protocol.OpEject:
-		p := c.activePlayer()
+		p := c.tankOrActivePlayer()
 		if p != nil && p.Alive {
-			p.QueueEject()
+			c.mu.Lock()
+			inTank := c.inTank
+			tankSess := c.tankSession
+			c.mu.Unlock()
+			if inTank && tankSess != nil {
+				mx, my := tankSess.GetMemberMouse(c)
+				p.QueueEjectAt(mx, my)
+			} else {
+				p.QueueEject()
+			}
 		}
 
 	case protocol.OpMultiboxToggle:
@@ -478,6 +521,18 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 
 	case protocol.OpUsePowerup:
 		c.handleUsePowerup(msg.Payload)
+
+	case protocol.OpTankQueue:
+		c.handleTankQueue(msg.Payload)
+
+	case protocol.OpTankJoin:
+		c.handleTankJoin(msg.Payload)
+
+	case protocol.OpTankCancel:
+		c.handleTankCancel()
+
+	case protocol.OpTankVote:
+		c.handleTankVote(msg.Payload)
 
 	case protocol.OpChat:
 		flags, text, ok := protocol.ParseChat(msg.Payload)
@@ -554,6 +609,18 @@ func (c *Client) activePlayer() *game.Player {
 		return c.multiPlayer
 	}
 	return c.player
+}
+
+// tankOrActivePlayer returns the shared tank player if in a tank, otherwise activePlayer().
+func (c *Client) tankOrActivePlayer() *game.Player {
+	c.mu.Lock()
+	inTank := c.inTank
+	ts := c.tankSession
+	c.mu.Unlock()
+	if inTank && ts != nil && ts.Player != nil {
+		return ts.Player
+	}
+	return c.activePlayer()
 }
 
 // handleMultiboxToggle enables or disables multibox for this client.
@@ -651,7 +718,7 @@ func (c *Client) handleDirectionLock(payload []byte) {
 		return
 	}
 	lock := payload[0] == 1
-	p := c.activePlayer()
+	p := c.tankOrActivePlayer()
 	if p == nil || !p.Alive {
 		return
 	}
@@ -666,7 +733,7 @@ func (c *Client) handleFreezePosition(payload []byte) {
 		return
 	}
 	freeze := payload[0] == 1
-	p := c.activePlayer()
+	p := c.tankOrActivePlayer()
 	if p == nil || !p.Alive {
 		return
 	}
@@ -674,7 +741,7 @@ func (c *Client) handleFreezePosition(payload []byte) {
 }
 
 func (c *Client) handleUsePowerup(payload []byte) {
-	p := c.player
+	p := c.tankOrActivePlayer()
 	if p == nil || !p.Alive {
 		return
 	}
@@ -749,15 +816,28 @@ func (c *Client) handleUsePowerup(payload []byte) {
 
 	case PowerupSpeedBoost:
 		// 6 seconds of 2x speed = 150 ticks at 25Hz
-		p.SpeedBoostTicks = 150
+		// Tank mode: stack duration (additive)
+		if p.IsTank {
+			p.SpeedBoostTicks += 150
+		} else {
+			p.SpeedBoostTicks = 150
+		}
 
 	case PowerupGhostMode:
 		// 6 seconds = 150 ticks
-		p.GhostModeTicks = 150
+		if p.IsTank {
+			p.GhostModeTicks += 150
+		} else {
+			p.GhostModeTicks = 150
+		}
 
 	case PowerupMassMagnet:
 		// 5 seconds = 125 ticks
-		p.MassMagnetTicks = 125
+		if p.IsTank {
+			p.MassMagnetTicks += 125
+		} else {
+			p.MassMagnetTicks = 125
+		}
 
 	case PowerupFreezeSplitter:
 		// Fire a fast-moving projectile toward mouse that force-splits AND freezes the first player it hits
@@ -772,8 +852,26 @@ func (c *Client) handleUsePowerup(payload []byte) {
 		p.RecombineTicks = 25 // 1 second of active pull
 	}
 
-	// Send updated powerup state to client
+	// Send updated powerup state to client (and all tank members if in a tank)
 	c.sendMsg(protocol.BuildPowerupState(c.shuffle, p.PowerupInventory))
+	c.mu.Lock()
+	inTank := c.inTank
+	tankSess := c.tankSession
+	c.mu.Unlock()
+	if inTank && tankSess != nil {
+		tankSess.Lock()
+		for _, m := range tankSess.Members {
+			if !m.Connected {
+				continue
+			}
+			cl, ok := m.ConnID.(*Client)
+			if !ok || cl == c || cl.shuffle == nil {
+				continue // already sent to c above
+			}
+			cl.sendMsg(protocol.BuildPowerupState(cl.shuffle, p.PowerupInventory))
+		}
+		tankSess.Unlock()
+	}
 }
 
 func (c *Client) sendMsg(msg []byte) {

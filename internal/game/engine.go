@@ -245,6 +245,29 @@ func (e *Engine) SpawnPlayerNear(p *Player, nearX, nearY, offset float64) {
 	p.SpawnProt = 75
 }
 
+// SpawnPlayerWithSize spawns a player with a custom start size (used for Tank mode).
+func (e *Engine) SpawnPlayerWithSize(p *Player, size float64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	// Clean up existing cells
+	for _, c := range p.Cells {
+		e.Grid.Remove(c)
+		e.removed = append(e.removed, c.ID)
+		delete(e.cells, c.ID)
+	}
+
+	x, y := e.findSpawnPos()
+	cell := NewPlayerCell(p, x, y, size)
+	cell.MergeAt = 0
+	e.addCell(cell)
+
+	p.Cells = append(p.Cells[:0], cell)
+	p.Alive = true
+	p.Score = cell.Mass()
+	p.SpawnProt = 75
+}
+
 func (e *Engine) findSpawnPos() (float64, float64) {
 	w := e.Cfg.MapWidth * 0.8
 	h := e.Cfg.MapHeight * 0.8
@@ -494,7 +517,8 @@ func (e *Engine) SpawnFreezeSplitter(owner *Player, fromX, fromY, toX, toY float
 }
 
 func (e *Engine) processPlayerSplit(p *Player) {
-	if !p.ConsumeSplit() {
+	ok, targetX, targetY := p.ConsumeSplit()
+	if !ok {
 		return
 	}
 	if len(p.Cells) >= e.Cfg.MaxCells {
@@ -526,9 +550,9 @@ func (e *Engine) processPlayerSplit(p *Player) {
 		c.Size = newSize
 		e.updated = append(e.updated, c) // tell client parent shrunk
 
-		// Direction toward mouse
-		dx := p.MouseX - c.X
-		dy := p.MouseY - c.Y
+		// Direction toward the queued target position
+		dx := targetX - c.X
+		dy := targetY - c.Y
 		dist := math.Sqrt(dx*dx + dy*dy)
 		if dist < 1 {
 			dx, dy = 1, 0
@@ -557,7 +581,8 @@ func (e *Engine) processPlayerSplit(p *Player) {
 }
 
 func (e *Engine) processPlayerEject(p *Player) {
-	if !p.ConsumeEject() {
+	ok, targetX, targetY := p.ConsumeEject()
+	if !ok {
 		return
 	}
 
@@ -580,9 +605,9 @@ func (e *Engine) processPlayerEject(p *Player) {
 			continue
 		}
 
-		// Direction toward mouse with Ogar-style spread: ±0.3 radians (±17.2°)
-		dx := p.MouseX - c.X
-		dy := p.MouseY - c.Y
+		// Direction toward the queued target with Ogar-style spread: ±0.3 radians (±17.2°)
+		dx := targetX - c.X
+		dy := targetY - c.Y
 		dist := math.Sqrt(dx*dx + dy*dy)
 		if dist < 1 {
 			dx, dy = 1, 0
@@ -1037,11 +1062,16 @@ func (e *Engine) applyDecay() {
 		if !p.Alive {
 			continue
 		}
+		// Tank mode: decay floor = MinPlayerSize × current connected member count
+		pMinSize := minSize
+		if p.IsTank && p.TankMemberCount > 0 {
+			pMinSize = e.Cfg.MinPlayerSize * float64(p.TankMemberCount)
+		}
 		for _, c := range p.Cells {
-			if c.Size > minSize {
+			if c.Size > pMinSize {
 				c.Size *= e.Cfg.DecayRate
-				if c.Size < minSize {
-					c.Size = minSize
+				if c.Size < pMinSize {
+					c.Size = pMinSize
 				}
 				e.updated = append(e.updated, c)
 			}

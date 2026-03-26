@@ -80,6 +80,9 @@ func main() {
 	}
 	server.BattleRoyale = br
 
+	// Initialize Tank Manager
+	server.TankMgr = game.NewTankManager()
+
 	// Start server-side bots
 	var botMgr *game.BotManager
 	if botCount > 0 {
@@ -267,6 +270,9 @@ func main() {
 
 			// Battle Royale tick (every game tick)
 			server.TickBattleRoyale()
+
+			// Tank session maintenance
+			server.TickTankSessions()
 
 			server.Broadcast(updated, eaten, removed, tickNum)
 

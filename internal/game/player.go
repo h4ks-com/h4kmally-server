@@ -23,10 +23,10 @@ type Player struct {
 	// Cells owned by this player (ordered by size descending)
 	Cells []*Cell
 
-	// Input actions queued for next tick
+	// Input actions queued for next tick (each entry carries the target mouse position)
 	mu         sync.Mutex
-	splitQueue int
-	ejectQueue int
+	splitQueue []ActionTarget
+	ejectQueue []ActionTarget
 
 	// Eject rate limiting (server-side cap: max 10 ejects/sec at 25Hz = 1 per ~2.5 ticks)
 	lastEjectTick uint64
@@ -67,6 +67,10 @@ type Player struct {
 
 	// Connection reference (set externally)
 	Conn interface{}
+
+	// ── Tank mode fields ──
+	IsTank          bool // true if this player is a shared tank body
+	TankMemberCount int  // number of current tank members (for decay floor)
 }
 
 var playerIDGen uint32
@@ -173,18 +177,39 @@ func (p *Player) SmallestCell() *Cell {
 	return best
 }
 
-// QueueSplit queues a split action.
+// ActionTarget stores the mouse position at the time an action was queued.
+type ActionTarget struct {
+	X, Y float64
+}
+
+// QueueSplit queues a split action aimed toward the player's current mouse position.
 func (p *Player) QueueSplit() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.splitQueue++
+	p.splitQueue = append(p.splitQueue, ActionTarget{X: p.MouseX, Y: p.MouseY})
 }
 
-// QueueEject queues an eject action.
+// QueueSplitAt queues a split action aimed toward explicit coordinates.
+// Used in tank mode so each member fires toward their own cursor.
+func (p *Player) QueueSplitAt(x, y float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.splitQueue = append(p.splitQueue, ActionTarget{X: x, Y: y})
+}
+
+// QueueEject queues an eject action aimed toward the player's current mouse position.
 func (p *Player) QueueEject() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.ejectQueue++
+	p.ejectQueue = append(p.ejectQueue, ActionTarget{X: p.MouseX, Y: p.MouseY})
+}
+
+// QueueEjectAt queues an eject action aimed toward explicit coordinates.
+// Used in tank mode so each member ejects toward their own cursor.
+func (p *Player) QueueEjectAt(x, y float64) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.ejectQueue = append(p.ejectQueue, ActionTarget{X: x, Y: y})
 }
 
 // SetMouse updates the mouse target position.
@@ -238,26 +263,30 @@ func (p *Player) SetFrozen(freeze bool) {
 	p.Frozen = freeze
 }
 
-// ConsumeSplit consumes one split from the queue. Returns true if there was one.
-func (p *Player) ConsumeSplit() bool {
+// ConsumeSplit consumes one split from the queue.
+// Returns (true, targetX, targetY) if there was one queued.
+func (p *Player) ConsumeSplit() (bool, float64, float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.splitQueue > 0 {
-		p.splitQueue--
-		return true
+	if len(p.splitQueue) > 0 {
+		t := p.splitQueue[0]
+		p.splitQueue = p.splitQueue[1:]
+		return true, t.X, t.Y
 	}
-	return false
+	return false, 0, 0
 }
 
-// ConsumeEject consumes one eject from the queue. Returns true if there was one.
-func (p *Player) ConsumeEject() bool {
+// ConsumeEject consumes one eject from the queue.
+// Returns (true, targetX, targetY) if there was one queued.
+func (p *Player) ConsumeEject() (bool, float64, float64) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if p.ejectQueue > 0 {
-		p.ejectQueue--
-		return true
+	if len(p.ejectQueue) > 0 {
+		t := p.ejectQueue[0]
+		p.ejectQueue = p.ejectQueue[1:]
+		return true, t.X, t.Y
 	}
-	return false
+	return false, 0, 0
 }
 
 // RemoveCell removes a cell from the player's cell list.

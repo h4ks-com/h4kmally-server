@@ -20,14 +20,19 @@ const (
 	OpDirectionLock  = 24 // lock/unlock movement direction (payload: 1 byte, 1=lock 0=unlock)
 	OpFreezePosition = 25 // freeze/unfreeze cell position (payload: 1 byte, 1=freeze 0=unfreeze)
 	OpUsePowerup     = 26 // use a charge of the active powerup (1 byte opcode only)
-	OpChat           = 99
-	OpBoostCheck     = 190
-	OpStatUpdate     = 191
-	OpFoodEaten      = 192
-	OpSpectate       = 205
-	OpAdblocker      = 208
-	OpCaptchaToken   = 220
-	OpPing           = 254
+	OpTankQueue      = 27 // request to join/create tank session (JSON payload)
+	OpTankJoin       = 28 // join private tank session by code (JSON payload)
+	OpTankCancel     = 29 // cancel tank matchmaking (1 byte opcode only)
+	OpTankVote       = 30 // vote for skin/effect during tank voting (JSON payload)
+
+	OpChat         = 99
+	OpBoostCheck   = 190
+	OpStatUpdate   = 191
+	OpFoodEaten    = 192
+	OpSpectate     = 205
+	OpAdblocker    = 208
+	OpCaptchaToken = 220
+	OpPing         = 254
 )
 
 // Server to Client opcodes (logical)
@@ -47,6 +52,8 @@ const (
 	OpClanPositions = 101 // periodic clan member positions
 	OpBattleRoyale  = 102 // battle royale zone update
 	OpPowerupState  = 103 // powerup inventory state (type + charges)
+	OpTankLobby     = 34  // tank lobby state update (JSON payload)
+	OpTankCursors   = 35  // tank teammate cursor positions (binary)
 	OpPasswordErr   = 180
 	OpSpawnResult   = 221
 	OpPingReply     = 254
@@ -292,4 +299,57 @@ func BuildPowerupState(st *ShuffleTable, inventory map[string]int) []byte {
 		buf = append(buf, byte(c))
 	}
 	return buf
+}
+
+// BuildTankLobby builds a TANK_LOBBY JSON message.
+func BuildTankLobby(st *ShuffleTable, jsonData []byte) []byte {
+	buf := make([]byte, 1+len(jsonData))
+	buf[0] = st.Encode(OpTankLobby)
+	copy(buf[1:], jsonData)
+	return buf
+}
+
+// TankCursorEntry represents one tank member's cursor for broadcasting.
+type TankCursorEntry struct {
+	Name string
+	X, Y int16
+}
+
+// BuildTankCursors builds a TANK_CURSORS binary message.
+// Format: opcode(1) + count(1) + [nameLen(1) + name(bytes) + x(i16) + y(i16)] * count
+func BuildTankCursors(st *ShuffleTable, cursors []TankCursorEntry) []byte {
+	buf := make([]byte, 0, 2+len(cursors)*32)
+	buf = append(buf, st.Encode(OpTankCursors))
+	buf = append(buf, byte(len(cursors)))
+	for _, c := range cursors {
+		nameBytes := []byte(c.Name)
+		buf = append(buf, byte(len(nameBytes)))
+		buf = append(buf, nameBytes...)
+		buf = append(buf, byte(c.X), byte(c.X>>8))
+		buf = append(buf, byte(c.Y), byte(c.Y>>8))
+	}
+	return buf
+}
+
+// ParseTankQueue parses a TANK_QUEUE JSON payload.
+type TankQueuePayload struct {
+	Size    int    `json:"size"`    // 2, 3, 4, or 0 for "don't mind"
+	Private bool   `json:"private"` // true = create private session
+	Name    string `json:"name"`    // player display name
+	Skin    string `json:"skin"`    // preferred skin
+	Effect  string `json:"effect"`  // preferred effect
+}
+
+// ParseTankJoin parses a TANK_JOIN JSON payload.
+type TankJoinPayload struct {
+	Code   string `json:"code"`   // join code for private sessions
+	Name   string `json:"name"`   // player display name
+	Skin   string `json:"skin"`   // preferred skin
+	Effect string `json:"effect"` // preferred effect
+}
+
+// TankVotePayload parsed from TANK_VOTE.
+type TankVotePayload struct {
+	Skin   string `json:"skin"`
+	Effect string `json:"effect"`
 }
