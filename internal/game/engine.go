@@ -159,6 +159,23 @@ func (e *Engine) QueueRemovePlayer(id uint32) {
 	e.mu.Unlock()
 }
 
+// GiveMass adds the given mass evenly across all of a player's cells.
+// Returns false if the player is not found or not alive.
+func (e *Engine) GiveMass(playerID uint32, mass float64) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	p, ok := e.players[playerID]
+	if !ok || !p.Alive || len(p.Cells) == 0 {
+		return false
+	}
+	perCell := mass / float64(len(p.Cells))
+	for _, c := range p.Cells {
+		c.SetMass(c.Mass() + perCell)
+		e.Grid.Move(c) // cell size changed — update grid bucket
+	}
+	return true
+}
+
 // KillPlayersForBR removes the given players (all cells) under the engine lock.
 // Used by Battle Royale to eliminate players whose cells fell below the kill threshold.
 // Unlike QueueRemovePlayer, this does NOT delete the player from e.players — the

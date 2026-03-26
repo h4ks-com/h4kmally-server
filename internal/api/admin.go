@@ -956,3 +956,47 @@ func (ah *AdminHandler) HandleAdminGrantPowerup(w http.ResponseWriter, r *http.R
 		"charges": charges,
 	})
 }
+
+// HandleAdminGiveMass gives mass to an online player.
+// POST /api/admin/give-mass  body: {"playerId":123,"mass":5000}
+func (ah *AdminHandler) HandleAdminGiveMass(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	sess := ah.requireAdmin(w, r)
+	if sess == nil {
+		return
+	}
+
+	var body struct {
+		PlayerID uint32  `json:"playerId"`
+		Mass     float64 `json:"mass"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"invalid json"}`))
+		return
+	}
+
+	if body.Mass <= 0 || body.Mass > 1000000 {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"mass must be between 1 and 1000000"}`))
+		return
+	}
+
+	ok := ah.server.Engine.GiveMass(body.PlayerID, body.Mass)
+	if !ok {
+		w.WriteHeader(404)
+		w.Write([]byte(`{"error":"player not found or not alive"}`))
+		return
+	}
+
+	log.Printf("[Admin] %s gave %.0f mass to player %d", sess.UserSub, body.Mass, body.PlayerID)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"ok":       true,
+		"playerId": body.PlayerID,
+		"mass":     body.Mass,
+	})
+}
