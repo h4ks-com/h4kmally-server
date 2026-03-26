@@ -2253,9 +2253,13 @@ func (s *Server) HandleSkinsAccess(w http.ResponseWriter, r *http.Request) {
 		}
 
 		if user == nil {
-			// Guest: can see but not use any skin
-			entry.Accessible = false
-			entry.Reason = "Sign in to use skins"
+			// Guest: only free skins are accessible
+			if sk.Category == "free" {
+				entry.Accessible = true
+			} else {
+				entry.Accessible = false
+				entry.Reason = "Sign in to unlock"
+			}
 		} else if isAdmin {
 			// Admin: can use any skin
 			entry.Accessible = true
