@@ -1167,6 +1167,14 @@ func (e *Engine) applyMassMagnet(p *Player) {
 func (e *Engine) applyRecombinePull(p *Player) {
 	cx, cy := p.Center()
 	for _, c := range p.Cells {
+		// Skip cells that were recently split (still boosting or have a
+		// future merge timer). Without this, a split during active recombine
+		// would have its child immediately pulled back and MergeAt cleared,
+		// causing it to merge back into the parent on the very next tick
+		// (the "disappearing split" bug).
+		if c.IsBoosting() || c.MergeAt > int64(e.tickNum) {
+			continue
+		}
 		dx := cx - c.X
 		dy := cy - c.Y
 		dist := math.Sqrt(dx*dx + dy*dy)
