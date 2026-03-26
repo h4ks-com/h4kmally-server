@@ -74,22 +74,22 @@ func NewShopHandler(authMgr *AuthManager, userStore *UserStore, payment PaymentP
 		orders:       make([]*ShopOrder, 0),
 		processedTxs: make(map[int]bool),
 		items: []ShopItem{
-			// ── Skin Tokens (base: 1.0 token/bean) ──
-			{ID: "skin-5", Name: "5 Skin Tokens", Price: 5, Tokens: 5, Type: "skin", Section: "skin"},
-			{ID: "skin-15", Name: "15 Skin Tokens", Price: 12, Tokens: 15, Type: "skin", Section: "skin"},
-			{ID: "skin-35", Name: "35 Skin Tokens", Price: 25, Tokens: 35, Type: "skin", Section: "skin"},
-			// ── Effect Tokens (premium: ~0.6-0.8 token/bean) ──
-			{ID: "effect-3", Name: "3 Effect Tokens", Price: 5, Tokens: 3, Type: "effect", Section: "effect"},
-			{ID: "effect-8", Name: "8 Effect Tokens", Price: 12, Tokens: 8, Type: "effect", Section: "effect"},
-			{ID: "effect-20", Name: "20 Effect Tokens", Price: 25, Tokens: 20, Type: "effect", Section: "effect"},
-			// ── Bundles (best deal: 33-53% savings vs individual) ──
-			{ID: "bundle-starter", Name: "Starter Pack", Price: 8, Tokens: 13, Type: "bundle", SkinTokens: 8, EffectTokens: 5, Section: "bundle"},
-			{ID: "bundle-pro", Name: "Pro Pack", Price: 18, Tokens: 32, Type: "bundle", SkinTokens: 20, EffectTokens: 12, Section: "bundle"},
-			{ID: "bundle-ultimate", Name: "Ultimate Pack", Price: 30, Tokens: 70, Type: "bundle", SkinTokens: 45, EffectTokens: 25, Section: "bundle"},
+			// ── Skin Tokens (base: 6 tokens/bean) ──
+			{ID: "skin-30", Name: "30 Skin Tokens", Price: 5, Tokens: 30, Type: "skin", Section: "skin"},
+			{ID: "skin-72", Name: "72 Skin Tokens", Price: 12, Tokens: 72, Type: "skin", Section: "skin"},
+			{ID: "skin-150", Name: "150 Skin Tokens", Price: 25, Tokens: 150, Type: "skin", Section: "skin"},
+			// ── Effect Tokens (base: 4 tokens/bean) ──
+			{ID: "effect-20", Name: "20 Effect Tokens", Price: 5, Tokens: 20, Type: "effect", Section: "effect"},
+			{ID: "effect-48", Name: "48 Effect Tokens", Price: 12, Tokens: 48, Type: "effect", Section: "effect"},
+			{ID: "effect-100", Name: "100 Effect Tokens", Price: 25, Tokens: 100, Type: "effect", Section: "effect"},
+			// ── Bundles (best deal: ~33-50% savings vs individual) ──
+			{ID: "bundle-starter", Name: "Starter Pack", Price: 8, Tokens: 80, Type: "bundle", SkinTokens: 48, EffectTokens: 32, Section: "bundle"},
+			{ID: "bundle-pro", Name: "Pro Pack", Price: 18, Tokens: 180, Type: "bundle", SkinTokens: 108, EffectTokens: 72, Section: "bundle"},
+			{ID: "bundle-ultimate", Name: "Ultimate Pack", Price: 30, Tokens: 300, Type: "bundle", SkinTokens: 180, EffectTokens: 120, Section: "bundle"},
 			// ── Powerup Pack ──
 			{ID: "powerup-pack", Name: "Powerup Pack", Price: 10, Tokens: 0, Type: "powerup", Section: "powerup"},
 			// ── Custom Skin Upload ──
-			{ID: "custom-skin", Name: "Custom Skin Upload", Price: 50, Tokens: 0, Type: "custom_skin", Section: "custom_skin"},
+			{ID: "custom-skin", Name: "Custom Skin Upload", Price: 125, Tokens: 0, Type: "custom_skin", Section: "custom_skin"},
 			// ── Clan Creation ──
 			{ID: "create-clan", Name: "Create a Clan", Price: 50, Tokens: 0, Type: "clan", Section: "clan"},
 		},
