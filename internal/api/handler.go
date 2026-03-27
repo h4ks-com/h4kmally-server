@@ -1676,10 +1676,12 @@ func (s *Server) grantBRRewards() {
 
 	// Build a map of player ID → userSub for authenticated non-bot clients
 	playerToSub := make(map[uint32]string)
+	playerToClient := make(map[uint32]*Client)
 	s.mu.RLock()
 	for client := range s.clients {
 		if client.userSub != "" && client.player != nil {
 			playerToSub[client.player.ID] = client.userSub
+			playerToClient[client.player.ID] = client
 		}
 	}
 	s.mu.RUnlock()
@@ -1717,6 +1719,12 @@ func (s *Server) grantBRRewards() {
 		}
 		log.Printf("[BR] Granted rewards to #%d (%s): %d powerup packs, %d skin tokens, %d effect tokens",
 			r.place, sub, r.powerPacks, r.skinTokens, r.effectTokens)
+
+		// Push updated powerup inventory to the live client so they see it immediately
+		if c, ok := playerToClient[pid]; ok && c.player != nil && r.powerPacks > 0 {
+			s.AuthMgr.UserStore.LoadPowerups(sub, c.player)
+			c.sendMsg(protocol.BuildPowerupState(c.shuffle, c.player.PowerupInventory))
+		}
 	}
 
 	if s.BattleRoyale.BroadcastFn != nil {
