@@ -278,7 +278,7 @@ func BuildBattleRoyale(st *ShuffleTable, state byte, playersAlive int, countdown
 }
 
 // BuildPowerupState builds a POWERUP_STATE packet with full inventory.
-// Format: opcode(1) + count(1) + [typeLen(1) + type(string) + charges(1)] * count
+// Format: opcode(1) + count(1) + [typeLen(1) + type(string) + charges(2)] * count
 func BuildPowerupState(st *ShuffleTable, inventory map[string]int) []byte {
 	buf := make([]byte, 0, 64)
 	buf = append(buf, st.Encode(OpPowerupState))
@@ -296,7 +296,10 @@ func BuildPowerupState(st *ShuffleTable, inventory map[string]int) []byte {
 		typeBytes := []byte(t)
 		buf = append(buf, byte(len(typeBytes)))
 		buf = append(buf, typeBytes...)
-		buf = append(buf, byte(c))
+		if c > 65535 {
+			c = 65535
+		}
+		buf = appendU16(buf, uint16(c))
 	}
 	return buf
 }
