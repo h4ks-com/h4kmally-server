@@ -119,10 +119,7 @@ func (s *Server) HandleStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit by IP
-	ip := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = fwd
-	}
+	ip := realIP(r)
 	if !statusLimiter.allow(ip) {
 		http.Error(w, "Rate limit exceeded", http.StatusTooManyRequests)
 		return

@@ -37,6 +37,27 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
+// realIP extracts the client's real IP address from the request,
+// checking X-Forwarded-For (first entry) and X-Real-IP before
+// falling back to RemoteAddr.
+func realIP(r *http.Request) string {
+	// X-Forwarded-For may be "client, proxy1, proxy2" — take the first
+	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
+		ip := strings.TrimSpace(strings.SplitN(fwd, ",", 2)[0])
+		if ip != "" {
+			return ip
+		}
+	}
+	if realip := r.Header.Get("X-Real-IP"); realip != "" {
+		return strings.TrimSpace(realip)
+	}
+	ip := r.RemoteAddr
+	if host, _, err := net.SplitHostPort(ip); err == nil {
+		ip = host
+	}
+	return ip
+}
+
 // Client represents a connected WebSocket client.
 type Client struct {
 	conn    *websocket.Conn
@@ -119,14 +140,7 @@ func NewServer(engine *game.Engine) *Server {
 // HandleWS is the WebSocket endpoint handler (/ws/).
 func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 	// Extract remote IP
-	remoteIP := r.RemoteAddr
-	if host, _, err := net.SplitHostPort(remoteIP); err == nil {
-		remoteIP = host
-	}
-	// Check forwarded headers
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		remoteIP = fwd
-	}
+	remoteIP := realIP(r)
 
 	// Check IP ban
 	if s.AuthMgr != nil {

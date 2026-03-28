@@ -65,10 +65,7 @@ func (cb *ChatBridge) HandleIncoming(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Rate limit
-	ip := r.RemoteAddr
-	if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-		ip = fwd
-	}
+	ip := realIP(r)
 	if !cb.limiter.allow(ip) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusTooManyRequests)
