@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -14,11 +15,11 @@ import (
 
 // AuthSession represents a validated user session.
 type AuthSession struct {
-	UserSub      string
-	UserName     string
-	UserUsername string // Logto username (for payment systems)
-	UserPic      string
-	ExpiresAt    time.Time
+	UserSub      string    `json:"sub"`
+	UserName     string    `json:"name"`
+	UserUsername string    `json:"username"`
+	UserPic      string    `json:"pic"`
+	ExpiresAt    time.Time `json:"expiresAt"`
 }
 
 // AuthManager handles Logto OAuth2 token validation and session management.
@@ -27,15 +28,20 @@ type AuthManager struct {
 	mu            sync.RWMutex
 	logtoEndpoint string // e.g. "https://auth.h4ks.com"
 	UserStore     *UserStore
+	sessionsPath  string // path to persist sessions on disk
 }
 
 // NewAuthManager creates an AuthManager that validates tokens against the given Logto endpoint.
-func NewAuthManager(logtoEndpoint string, userStore *UserStore) *AuthManager {
+// sessionsPath is the file path for persisting sessions across restarts.
+func NewAuthManager(logtoEndpoint string, userStore *UserStore, sessionsPath string) *AuthManager {
 	am := &AuthManager{
 		sessions:      make(map[string]*AuthSession),
 		logtoEndpoint: strings.TrimRight(logtoEndpoint, "/"),
 		UserStore:     userStore,
+		sessionsPath:  sessionsPath,
 	}
+
+	am.loadSessions()
 
 	// Periodically clean up expired sessions
 	go func() {
@@ -51,11 +57,54 @@ func (am *AuthManager) cleanup() {
 	am.mu.Lock()
 	defer am.mu.Unlock()
 	now := time.Now()
+	changed := false
 	for token, session := range am.sessions {
 		if now.After(session.ExpiresAt) {
 			delete(am.sessions, token)
+			changed = true
 		}
 	}
+	if changed {
+		am.saveSessionsLocked()
+	}
+}
+
+// loadSessions restores sessions from disk.
+func (am *AuthManager) loadSessions() {
+	if am.sessionsPath == "" {
+		return
+	}
+	data, err := os.ReadFile(am.sessionsPath)
+	if err != nil {
+		return // file doesn't exist yet
+	}
+	var loaded map[string]*AuthSession
+	if err := json.Unmarshal(data, &loaded); err != nil {
+		log.Printf("Failed to load sessions: %v", err)
+		return
+	}
+	now := time.Now()
+	count := 0
+	for token, session := range loaded {
+		if now.Before(session.ExpiresAt) {
+			am.sessions[token] = session
+			count++
+		}
+	}
+	log.Printf("Restored %d sessions from disk", count)
+}
+
+// saveSessionsLocked persists sessions to disk. Must be called under am.mu lock.
+func (am *AuthManager) saveSessionsLocked() {
+	if am.sessionsPath == "" {
+		return
+	}
+	data, err := json.Marshal(am.sessions)
+	if err != nil {
+		log.Printf("Failed to marshal sessions: %v", err)
+		return
+	}
+	_ = os.WriteFile(am.sessionsPath, data, 0600)
 }
 
 func generateSessionToken() string {
@@ -164,6 +213,7 @@ func (am *AuthManager) HandleAuthMe(w http.ResponseWriter, r *http.Request) {
 		UserPic:      userInfo.Picture,
 		ExpiresAt:    time.Now().Add(24 * time.Hour),
 	}
+	am.saveSessionsLocked()
 	am.mu.Unlock()
 
 	log.Printf("User authenticated: sub=%s name=%q", userInfo.Sub, userInfo.Name)

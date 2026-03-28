@@ -96,7 +96,7 @@ func main() {
 	}
 	superAdmin := os.Getenv("SUPER_ADMIN")
 	userStore := api.NewUserStore("data/users.json", superAdmin)
-	authMgr := api.NewAuthManager(logtoEndpoint, userStore)
+	authMgr := api.NewAuthManager(logtoEndpoint, userStore, "data/sessions.json")
 	server.AuthMgr = authMgr
 
 	if superAdmin != "" {
