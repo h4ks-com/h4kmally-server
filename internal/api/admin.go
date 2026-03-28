@@ -106,8 +106,8 @@ func (ah *AdminHandler) HandleAdminOnline(w http.ResponseWriter, r *http.Request
 			continue
 		}
 		cx, cy := client.player.Center()
-		ip := ""
-		if client.conn != nil {
+		ip := client.remoteIP
+		if ip == "" && client.conn != nil {
 			ip = extractIP(client.conn.RemoteAddr().String())
 		}
 		players = append(players, OnlinePlayerInfo{
