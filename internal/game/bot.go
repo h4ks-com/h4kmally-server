@@ -68,7 +68,8 @@ type Bot struct {
 	Player *Player
 
 	// AI state
-	splitCooldown int // ticks until next split is allowed
+	splitCooldown int    // ticks until next split is allowed
+	Difficulty    string // "easy", "normal", "hard"
 }
 
 // NewBot creates a new bot with a random name, random free skin, and possibly a random effect.
@@ -84,8 +85,17 @@ func NewBot() *Bot {
 	}
 	p := NewPlayer(name, skin, effect)
 	p.IsSubscriber = false
+	// Random difficulty distribution: 40% easy, 40% normal, 20% hard
+	roll := rand.IntN(10)
+	difficulty := "normal"
+	if roll < 4 {
+		difficulty = "easy"
+	} else if roll >= 8 {
+		difficulty = "hard"
+	}
 	return &Bot{
-		Player: p,
+		Player:     p,
+		Difficulty: difficulty,
 	}
 }
 
@@ -128,6 +138,23 @@ func (b *Bot) Decide(engine *Engine) {
 	var splitTarget *Cell
 	splitTargetDist := math.MaxFloat64
 
+	// Difficulty-based modifiers
+	var playerAttract, playerFlee, splitEnabled float64
+	switch b.Difficulty {
+	case "easy":
+		playerAttract = 1.2  // weaker chase
+		playerFlee = 0.6     // slower flee
+		splitEnabled = 0     // never split-kills
+	case "hard":
+		playerAttract = 3.5  // aggressive chase
+		playerFlee = 1.5     // fast flee
+		splitEnabled = 1     // always try split-kills
+	default: // "normal"
+		playerAttract = 2.5
+		playerFlee = 1.0
+		splitEnabled = 1
+	}
+
 	for _, cell := range visible {
 		// Skip own cells
 		if cell.Owner == p {
@@ -164,11 +191,11 @@ func (b *Bot) Decide(engine *Engine) {
 			edgeDist := dist - mySize - cell.Size // edge-to-edge distance
 
 			if myMass > otherMass*1.3 {
-				// We can eat them — strong attraction
-				influence = cell.Size * 2.5
+				// We can eat them — attraction scaled by difficulty
+				influence = cell.Size * playerAttract
 
 				// Check if this is a viable split-kill target
-				if b.splitCooldown == 0 && len(p.Cells) < 8 {
+				if splitEnabled > 0 && b.splitCooldown == 0 && len(p.Cells) < 8 {
 					// After split, each half has half mass
 					halfMass := myMass / 2.0
 					if halfMass > otherMass*1.3 && myMass < otherMass*5.0 {
@@ -188,8 +215,8 @@ func (b *Bot) Decide(engine *Engine) {
 				if threatDist < 1 {
 					threatDist = 1
 				}
-				// Strong repulsion, scaled by threat size
-				influence = -cell.Size
+				// Repulsion scaled by difficulty
+				influence = -cell.Size * playerFlee
 				dist = threatDist // use edge distance for influence scaling
 			} else {
 				// Similar size — mild avoidance

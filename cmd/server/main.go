@@ -257,6 +257,7 @@ func main() {
 	// Bot management endpoints (admin only)
 	mux.HandleFunc("/api/admin/bots", server.HandleBotList)
 	mux.HandleFunc("/api/admin/bots/set-count", server.HandleBotSetCount)
+	mux.HandleFunc("/api/admin/bots/update", server.HandleBotUpdate)
 
 	// Create replay buffer (record every 5 ticks = 5Hz, keep 60 seconds)
 	replayBuf := game.NewReplayBuffer(5, 60)

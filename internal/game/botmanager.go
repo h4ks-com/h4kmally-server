@@ -104,23 +104,52 @@ func (bm *BotManager) GetBotList() []BotInfo {
 			mass += c.Size * c.Size / 100
 		}
 		out = append(out, BotInfo{
-			ID:     b.Player.ID,
-			Name:   b.Player.Name,
-			Skin:   b.Player.Skin,
-			Effect: b.Player.Effect,
-			Alive:  b.Player.Alive,
-			Mass:   int(mass),
+			ID:         b.Player.ID,
+			Name:       b.Player.Name,
+			Skin:       b.Player.Skin,
+			Effect:     b.Player.Effect,
+			Alive:      b.Player.Alive,
+			Mass:       int(mass),
+			Difficulty: b.Difficulty,
 		})
 	}
 	return out
 }
 
+// FindBot returns the bot with the given player ID, or nil.
+func (bm *BotManager) FindBot(id uint32) *Bot {
+	for _, b := range bm.bots {
+		if b.Player.ID == id {
+			return b
+		}
+	}
+	return nil
+}
+
+// UpdateBot updates a bot's mutable properties. Returns false if bot not found.
+func (bm *BotManager) UpdateBot(id uint32, name, skin, effect, difficulty string) bool {
+	b := bm.FindBot(id)
+	if b == nil {
+		return false
+	}
+	if name != "" {
+		b.Player.Name = name
+	}
+	b.Player.Skin = skin
+	b.Player.Effect = effect
+	if difficulty == "easy" || difficulty == "normal" || difficulty == "hard" {
+		b.Difficulty = difficulty
+	}
+	return true
+}
+
 // BotInfo is a serializable snapshot of one bot.
 type BotInfo struct {
-	ID     uint32 `json:"id"`
-	Name   string `json:"name"`
-	Skin   string `json:"skin"`
-	Effect string `json:"effect"`
-	Alive  bool   `json:"alive"`
-	Mass   int    `json:"mass"`
+	ID         uint32 `json:"id"`
+	Name       string `json:"name"`
+	Skin       string `json:"skin"`
+	Effect     string `json:"effect"`
+	Alive      bool   `json:"alive"`
+	Mass       int    `json:"mass"`
+	Difficulty string `json:"difficulty"`
 }

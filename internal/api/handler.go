@@ -2817,6 +2817,39 @@ func (s *Server) HandleBotSetCount(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "count": s.BotMgr.BotCount()})
 }
 
+// HandleBotUpdate updates an individual bot's properties (admin only).
+func (s *Server) HandleBotUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if !s.checkAdmin(r) {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	var req struct {
+		ID         uint32 `json:"id"`
+		Name       string `json:"name"`
+		Skin       string `json:"skin"`
+		Effect     string `json:"effect"`
+		Difficulty string `json:"difficulty"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", 400)
+		return
+	}
+	if s.BotMgr == nil {
+		http.Error(w, "No bot manager", 400)
+		return
+	}
+	if !s.BotMgr.UpdateBot(req.ID, req.Name, req.Skin, req.Effect, req.Difficulty) {
+		http.Error(w, "Bot not found", 404)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true})
+}
+
 // checkAdmin validates admin auth for server-level handlers. Returns true if authorized.
 func (s *Server) checkAdmin(r *http.Request) bool {
 	sessionToken := r.URL.Query().Get("session")
