@@ -558,6 +558,56 @@ func (mh *MarketplaceHandler) HandleBuyListing(w http.ResponseWriter, r *http.Re
 		}
 	}
 
+	// BEANS_MERCHANT auto-complete: skip payment, fulfil instantly
+	if mh.payment.IsMerchant(buyerUsername) {
+		now := time.Now().Unix()
+		listing.Status = "sold"
+		listing.BuyerSub = session.UserSub
+		listing.BuyerUsername = buyerUsername
+		listing.SoldAt = now
+
+		purchase := &MarketplacePendingPurchase{
+			ID:            generateOrderID(),
+			ListingID:     listing.ID,
+			BuyerSub:      session.UserSub,
+			BuyerUsername: buyerUsername,
+			Amount:        0,
+			Status:        "completed",
+			CreatedAt:     now,
+		}
+		mh.pending = append(mh.pending, purchase)
+
+		sellerSub := listing.SellerSub
+		sellerUsername := listing.SellerUsername
+		itemType := listing.ItemType
+		itemKey := listing.ItemKey
+		quantity := listing.Quantity
+		price := listing.Price
+		mh.save()
+		mh.mu.Unlock()
+
+		// Grant items to merchant and pay the seller
+		go func() {
+			mh.grantItems(session.UserSub, itemType, itemKey, quantity)
+			if !mh.payment.IsMerchant(sellerUsername) {
+				if err := mh.payment.SendTransfer(sellerUsername, price); err != nil {
+					log.Printf("[Marketplace] PAYOUT FAILED (merchant-buy): listing=%s seller=%s amount=%d err=%v",
+						listing.ID, sellerUsername, price, err)
+				}
+			}
+			log.Printf("[Marketplace] Merchant purchase completed: listing=%s buyer=%s seller=%s item=%s/%s qty=%d",
+				listing.ID, buyerUsername, sellerUsername, itemType, itemKey, quantity)
+			_ = sellerSub
+		}()
+
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"purchase":   purchase,
+			"paymentUrl": "",
+			"listing":    listing,
+		})
+		return
+	}
+
 	// Check no other buyer has an active pending purchase for this listing
 	for _, p := range mh.pending {
 		if p.ListingID == listing.ID && p.Status == "pending" {
@@ -942,15 +992,20 @@ func (mh *MarketplaceHandler) checkTransactions() {
 			// We've already marked it sold, so no double-spend risk.
 			go func() {
 				mh.grantItems(buyerSub, itemType, itemKey, quantity)
-				// Pay the seller
-				payErr := mh.payment.SendTransfer(sellerUsername, price)
-				if payErr != nil {
-					log.Printf("[Marketplace] PAYOUT FAILED: listing=%s seller=%s amount=%d err=%v",
-						listing.ID, sellerUsername, price, payErr)
-					mh.mu.Lock()
-					listing.PayoutErr = payErr.Error()
-					mh.save()
-					mh.mu.Unlock()
+				// Pay the seller (skip if seller is BEANS_MERCHANT — can't transfer to self)
+				if mh.payment.IsMerchant(sellerUsername) {
+					log.Printf("[Marketplace] Skipping payout (seller is merchant): listing=%s seller=%s amount=%d",
+						listing.ID, sellerUsername, price)
+				} else {
+					payErr := mh.payment.SendTransfer(sellerUsername, price)
+					if payErr != nil {
+						log.Printf("[Marketplace] PAYOUT FAILED: listing=%s seller=%s amount=%d err=%v",
+							listing.ID, sellerUsername, price, payErr)
+						mh.mu.Lock()
+						listing.PayoutErr = payErr.Error()
+						mh.save()
+						mh.mu.Unlock()
+					}
 				}
 				log.Printf("[Marketplace] Sale completed: listing=%s buyer=%s seller=%s item=%s/%s qty=%d price=%d txID=%d",
 					listing.ID, buyerUsername, sellerUsername, itemType, itemKey, quantity, price, tx.ID)

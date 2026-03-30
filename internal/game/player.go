@@ -10,6 +10,7 @@ import (
 type Player struct {
 	ID     uint32 // unique player ID
 	Name   string
+	Sub    string // user sub (auth identity, empty for guests)
 	Skin   string
 	Effect string // border effect (e.g. "neon", "prismatic", "starfield", "lightning")
 	Clan   string
@@ -56,6 +57,10 @@ type Player struct {
 
 	// Revenge tracking: maps playerID → tick when they last ate one of our cells
 	RevengeWindow map[uint32]uint64
+
+	// Who killed this player (set when final cell is eaten by another player)
+	KilledByName string // name of the killer (empty if died to virus/other)
+	KilledBySub  string // userSub of the killer (empty if unknown)
 
 	// ── Active powerup state ──
 	PowerupInventory map[string]int // type → charges (multiple powerups)
@@ -111,6 +116,8 @@ func (p *Player) ResetSessionStats() {
 	p.SessionVirusHits = 0
 	p.SessionRevenge = 0
 	p.RevengeWindow = make(map[uint32]uint64)
+	p.KilledByName = ""
+	p.KilledBySub = ""
 }
 
 // TotalMass returns the sum of mass across all cells.

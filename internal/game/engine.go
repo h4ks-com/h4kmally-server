@@ -964,6 +964,9 @@ func (e *Engine) resolveCollisions() {
 					// Check if victim had only 1 cell left -> this is a kill
 					if len(b.Owner.Cells) == 1 {
 						a.Owner.SessionKills++
+						// Record who killed the victim
+						b.Owner.KilledByName = a.Owner.Name
+						b.Owner.KilledBySub = a.Owner.Sub
 						// Check revenge: did this player kill us recently?
 						if tick, ok := a.Owner.RevengeWindow[b.Owner.ID]; ok {
 							if e.tickNum-tick < 25*60 { // 60 seconds

@@ -7,6 +7,10 @@ type PaymentProvider interface {
 	// Name returns a human-readable name for this payment provider.
 	Name() string
 
+	// IsMerchant returns true if the given username is the merchant account.
+	// Used to skip self-transactions (escrow, payouts) for the merchant.
+	IsMerchant(username string) bool
+
 	// CreateGiftLink creates a redeemable gift worth `amount` units of currency.
 	// Returns the gift code and a URL where the user can redeem it.
 	// expiresIn is a duration string like "24h".

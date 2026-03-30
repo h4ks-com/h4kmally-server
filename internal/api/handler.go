@@ -132,6 +132,7 @@ type Server struct {
 	BattleRoyale *game.BattleRoyale
 	TankMgr      *game.TankManager
 	BotMgr       *game.BotManager
+	BountyMgr    *BountyHandler
 	clients      map[*Client]bool
 	mu           sync.RWMutex
 
@@ -483,11 +484,13 @@ func (c *Client) handleMessage(msg *protocol.ParsedMessage) {
 		// Create or respawn
 		if c.player == nil {
 			c.player = game.NewPlayer(sp.Name, validatedSkin, validatedEffect)
+			c.player.Sub = c.userSub
 			c.player.Conn = c
 			c.engine.AddPlayer(c.player)
 			log.Printf("Player %q (ID %d) joined", sp.Name, c.player.ID)
 		} else {
 			c.player.Name = sp.Name
+			c.player.Sub = c.userSub
 			c.player.Skin = validatedSkin
 			c.player.Effect = validatedEffect
 		}
@@ -1431,6 +1434,14 @@ func (s *Server) broadcastToClient(client *Client, cfg game.Config, updatedArr [
 	client.mu.Unlock()
 	primaryDied := client.player != nil && wasAlive && !client.player.Alive
 	if primaryDied {
+		// Check bounties: if this player had a bounty and someone killed them, pay out
+		if s.BountyMgr != nil && client.player.KilledByName != "" {
+			s.BountyMgr.OnPlayerKilled(
+				client.player.Name, client.userSub,
+				client.player.KilledByName, client.player.KilledBySub,
+			)
+		}
+
 		// Bank any remaining score delta and record the game
 		if client.userSub != "" && s.AuthMgr != nil {
 			score := int64(client.player.Score)

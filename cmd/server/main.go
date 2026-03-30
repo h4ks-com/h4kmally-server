@@ -118,6 +118,7 @@ func main() {
 	// Payment provider + Shop + Marketplace (optional — enabled when BEANS_API_TOKEN is set)
 	var shopHandler *api.ShopHandler
 	var marketplaceHandler *api.MarketplaceHandler
+	var bountyHandler *api.BountyHandler
 	beansToken := os.Getenv("BEANS_API_TOKEN")
 	beansSite := os.Getenv("BEANS_SITE_URL")
 	beansMerchant := os.Getenv("BEANS_MERCHANT")
@@ -130,9 +131,17 @@ func main() {
 		marketplaceMaxPrice := envInt("MARKETPLACE_MAX_PRICE", 100)
 		marketplacePayment := api.NewBeansProvider(beansSite, beansToken, beansMerchant)
 		marketplaceHandler = api.NewMarketplaceHandler(authMgr, userStore, marketplacePayment, marketplaceMaxPrice)
-		log.Printf("Shop + Marketplace enabled: payment=%s merchant=%s maxPrice=%d", payment.Name(), beansMerchant, marketplaceMaxPrice)
+		bountyPayment := api.NewBeansProvider(beansSite, beansToken, beansMerchant)
+		bountyHandler = api.NewBountyHandler(authMgr, userStore, bountyPayment)
+		bountyHandler.StartPoller(10 * time.Second)
+		server.BountyMgr = bountyHandler
+		log.Printf("Shop + Marketplace + Bounties enabled: payment=%s merchant=%s maxPrice=%d", payment.Name(), beansMerchant, marketplaceMaxPrice)
 	} else {
+		// Bounties still work with powerup-only rewards even without beans
+		bountyHandler = api.NewBountyHandler(authMgr, userStore, nil)
+		server.BountyMgr = bountyHandler
 		log.Println("Shop + Marketplace disabled (set BEANS_API_TOKEN and BEANS_MERCHANT to enable)")
+		log.Println("Bounty system enabled (powerup rewards only)")
 	}
 
 	// HTTP routes
@@ -249,6 +258,15 @@ func main() {
 		// Admin marketplace routes
 		mux.HandleFunc("/api/admin/marketplace", marketplaceHandler.HandleAdminListings)
 		mux.HandleFunc("/api/admin/marketplace/reverse", marketplaceHandler.HandleAdminReverse)
+	}
+
+	// Bounty system endpoints
+	if bountyHandler != nil {
+		mux.HandleFunc("/api/bounties", bountyHandler.HandleListBounties)
+		mux.HandleFunc("/api/bounties/my", bountyHandler.HandleMyBounties)
+		mux.HandleFunc("/api/bounties/create", bountyHandler.HandleCreateBounty)
+		mux.HandleFunc("/api/bounties/cancel", bountyHandler.HandleCancelBounty)
+		log.Println("Bounty system routes registered")
 	}
 
 	// Bot management endpoints (admin only)

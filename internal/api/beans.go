@@ -35,6 +35,10 @@ func (bp *BeansProvider) Name() string {
 	return "Beans Bank"
 }
 
+func (bp *BeansProvider) IsMerchant(username string) bool {
+	return strings.EqualFold(username, bp.merchant)
+}
+
 // doRequest makes an authenticated API request.
 func (bp *BeansProvider) doRequest(method, path string, body interface{}) ([]byte, int, error) {
 	var bodyReader io.Reader

@@ -282,6 +282,47 @@ func (sh *ShopHandler) HandlePurchase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// BEANS_MERCHANT gets shop items for free (no self-transaction needed).
+	// Immediately fulfil the order without creating a pending payment.
+	if sh.payment.IsMerchant(username) {
+		switch item.Type {
+		case "effect":
+			sh.userStore.GrantEffectTokens(session.UserSub, item.Tokens)
+		case "bundle":
+			sh.userStore.GrantTokens(session.UserSub, item.SkinTokens)
+			sh.userStore.GrantEffectTokens(session.UserSub, item.EffectTokens)
+		case "powerup":
+			sh.userStore.GrantPowerupPack(session.UserSub)
+		case "custom_skin":
+			sh.userStore.AddCustomSkinSlot(session.UserSub)
+		case "clan":
+			sh.userStore.AddClanCreationSlot(session.UserSub)
+		default:
+			sh.userStore.GrantTokens(session.UserSub, item.Tokens)
+		}
+		order := &ShopOrder{
+			ID:        generateOrderID(),
+			UserSub:   session.UserSub,
+			Username:  username,
+			ItemID:    item.ID,
+			Amount:    0,
+			Tokens:    item.Tokens,
+			TokenType: item.Type,
+			Status:    "completed",
+			CreatedAt: time.Now().Unix(),
+		}
+		sh.mu.Lock()
+		sh.orders = append(sh.orders, order)
+		sh.saveOrders()
+		sh.mu.Unlock()
+		log.Printf("[Shop] Merchant %s got %s for free (auto-fulfilled)", username, item.ID)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"order":      order,
+			"paymentUrl": "",
+		})
+		return
+	}
+
 	sh.mu.Lock()
 
 	// Check for existing pending order for same item from same user

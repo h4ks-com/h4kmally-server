@@ -26,3 +26,4 @@ skins/*.svg
 .DS_Store
 Thumbs.db
 sigmally-server
+server
