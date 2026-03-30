@@ -142,13 +142,13 @@ func (b *Bot) Decide(engine *Engine) {
 	var playerAttract, playerFlee, splitEnabled float64
 	switch b.Difficulty {
 	case "easy":
-		playerAttract = 1.2  // weaker chase
-		playerFlee = 0.6     // slower flee
-		splitEnabled = 0     // never split-kills
+		playerAttract = 1.2 // weaker chase
+		playerFlee = 0.6    // slower flee
+		splitEnabled = 0    // never split-kills
 	case "hard":
-		playerAttract = 3.5  // aggressive chase
-		playerFlee = 1.5     // fast flee
-		splitEnabled = 1     // always try split-kills
+		playerAttract = 3.5 // aggressive chase
+		playerFlee = 1.5    // fast flee
+		splitEnabled = 1    // always try split-kills
 	default: // "normal"
 		playerAttract = 2.5
 		playerFlee = 1.0

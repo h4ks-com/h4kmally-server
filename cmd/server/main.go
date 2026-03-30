@@ -251,17 +251,13 @@ func main() {
 		mux.HandleFunc("/api/admin/marketplace/reverse", marketplaceHandler.HandleAdminReverse)
 	}
 
-	// Replay endpoint (admin only)
-	mux.HandleFunc("/api/admin/replay", server.HandleReplay)
-
 	// Bot management endpoints (admin only)
 	mux.HandleFunc("/api/admin/bots", server.HandleBotList)
 	mux.HandleFunc("/api/admin/bots/set-count", server.HandleBotSetCount)
 	mux.HandleFunc("/api/admin/bots/update", server.HandleBotUpdate)
 
-	// Create replay buffer (record every 5 ticks = 5Hz, keep 60 seconds)
-	replayBuf := game.NewReplayBuffer(5, 60)
-	server.ReplayBuffer = replayBuf
+	// Share upload proxy (avoids CORS issues with s.h4ks.com)
+	mux.HandleFunc("/api/share/upload", server.HandleShareUpload)
 
 	// CORS middleware for all routes
 	handler := corsMiddleware(mux)
@@ -279,9 +275,6 @@ func main() {
 
 		for range ticker.C {
 			updated, eaten, removed, tickNum := engine.Tick()
-
-			// Record replay frame (lightweight, skips most ticks)
-			replayBuf.RecordTick(tickNum, engine.SnapshotCells())
 
 			if botMgr != nil {
 				botMgr.Tick()

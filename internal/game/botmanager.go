@@ -2,10 +2,12 @@ package game
 
 import (
 	"log"
+	"sync"
 )
 
 // BotManager manages server-side bots.
 type BotManager struct {
+	mu     sync.Mutex
 	engine *Engine
 	bots   []*Bot
 	count  int // desired bot count
@@ -40,6 +42,8 @@ func (bm *BotManager) addBot() {
 // Must be called AFTER engine.Tick() so bots see the latest game state,
 // but their actions will be processed on the next engine tick.
 func (bm *BotManager) Tick() {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
 	// Don't respawn bots during active BR (they must stay dead until it ends).
 	brActive := bm.br != nil && bm.br.IsActive()
 
@@ -73,11 +77,15 @@ func (bm *BotManager) Tick() {
 
 // BotCount returns the number of bots currently managed.
 func (bm *BotManager) BotCount() int {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
 	return len(bm.bots)
 }
 
 // SetCount dynamically adjusts the target bot count. Adds or removes bots accordingly.
 func (bm *BotManager) SetCount(n int) {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
 	if n < 0 {
 		n = 0
 	}
@@ -97,6 +105,8 @@ func (bm *BotManager) SetCount(n int) {
 
 // GetBotList returns a snapshot of all bot info for the admin API.
 func (bm *BotManager) GetBotList() []BotInfo {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
 	out := make([]BotInfo, 0, len(bm.bots))
 	for _, b := range bm.bots {
 		mass := 0.0
@@ -118,6 +128,13 @@ func (bm *BotManager) GetBotList() []BotInfo {
 
 // FindBot returns the bot with the given player ID, or nil.
 func (bm *BotManager) FindBot(id uint32) *Bot {
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	return bm.findBotLocked(id)
+}
+
+// findBotLocked is the internal version — caller must hold bm.mu.
+func (bm *BotManager) findBotLocked(id uint32) *Bot {
 	for _, b := range bm.bots {
 		if b.Player.ID == id {
 			return b
@@ -128,7 +145,9 @@ func (bm *BotManager) FindBot(id uint32) *Bot {
 
 // UpdateBot updates a bot's mutable properties. Returns false if bot not found.
 func (bm *BotManager) UpdateBot(id uint32, name, skin, effect, difficulty string) bool {
-	b := bm.FindBot(id)
+	bm.mu.Lock()
+	defer bm.mu.Unlock()
+	b := bm.findBotLocked(id)
 	if b == nil {
 		return false
 	}

@@ -14,12 +14,12 @@ import (
 	"io"
 	"log"
 	"math"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strconv"
 	"strings"
 	"sync"
 	sync_atomic "sync/atomic"
@@ -131,7 +131,6 @@ type Server struct {
 	ClanStore    *ClanStore
 	BattleRoyale *game.BattleRoyale
 	TankMgr      *game.TankManager
-	ReplayBuffer *game.ReplayBuffer
 	BotMgr       *game.BotManager
 	clients      map[*Client]bool
 	mu           sync.RWMutex
@@ -2729,40 +2728,6 @@ func (s *Server) HandleActivatePowerup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// HandleReplay serves the last N seconds of game replay data (admin only).
-func (s *Server) HandleReplay(w http.ResponseWriter, r *http.Request) {
-	if r.Method != "GET" {
-		http.Error(w, "Method not allowed", 405)
-		return
-	}
-	if !s.checkAdmin(r) {
-		http.Error(w, "Unauthorized", 401)
-		return
-	}
-
-	if s.ReplayBuffer == nil {
-		http.Error(w, "Replay not available", 503)
-		return
-	}
-
-	// Default 30 seconds, max 60
-	seconds := 30
-	if q := r.URL.Query().Get("seconds"); q != "" {
-		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 60 {
-			seconds = n
-		}
-	}
-
-	data, err := s.ReplayBuffer.GetReplay(seconds)
-	if err != nil {
-		http.Error(w, "Failed to encode replay", 500)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.Write(data)
-}
-
 // HandleBotList returns the list of bots and their status (admin only).
 func (s *Server) HandleBotList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {
@@ -2774,6 +2739,7 @@ func (s *Server) HandleBotList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.BotMgr == nil {
+		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(map[string]interface{}{"bots": []interface{}{}, "count": 0})
 		return
 	}
@@ -2867,4 +2833,60 @@ func (s *Server) checkAdmin(r *http.Request) bool {
 		return false
 	}
 	return s.AuthMgr.UserStore.IsAdmin(session.UserSub)
+}
+
+// HandleShareUpload proxies a file upload to s.h4ks.com to avoid CORS issues.
+// Accepts multipart form with a "file" field, forwards it, returns the JSON response.
+func (s *Server) HandleShareUpload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+
+	// Limit upload size to 100 MB
+	r.Body = http.MaxBytesReader(w, r.Body, 100<<20)
+
+	// Parse the incoming multipart form
+	if err := r.ParseMultipartForm(100 << 20); err != nil {
+		http.Error(w, "File too large or bad request", 400)
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		http.Error(w, "Missing file field", 400)
+		return
+	}
+	defer file.Close()
+
+	// Build a new multipart form to forward to s.h4ks.com
+	var buf bytes.Buffer
+	mw := multipart.NewWriter(&buf)
+	part, err := mw.CreateFormFile("file", header.Filename)
+	if err != nil {
+		http.Error(w, "Internal error", 500)
+		return
+	}
+	if _, err := io.Copy(part, file); err != nil {
+		http.Error(w, "Internal error", 500)
+		return
+	}
+	mw.Close()
+
+	// Forward to s.h4ks.com
+	client := &http.Client{Timeout: 60 * time.Second}
+	resp, err := client.Post("https://s.h4ks.com/api/", mw.FormDataContentType(), &buf)
+	if err != nil {
+		log.Printf("Share upload proxy error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(502)
+		json.NewEncoder(w).Encode(map[string]string{"status": "error", "message": "Upload service unavailable"})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Forward the response body as-is
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(resp.StatusCode)
+	io.Copy(w, resp.Body)
 }

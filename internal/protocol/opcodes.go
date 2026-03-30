@@ -37,27 +37,27 @@ const (
 
 // Server to Client opcodes (logical)
 const (
-	OpWorldUpdate   = 16
-	OpCamera        = 17
-	OpClearAll      = 18
-	OpClearMine     = 20
-	OpMultiboxState = 22 // multibox state notification
-	OpAddMyCell     = 32
-	OpAddMultiCell  = 33 // like AddMyCell but for multi player cells
-	OpLeaderboardT  = 48
-	OpLeaderboardF  = 49
-	OpBorder        = 64
-	OpChatRecv      = 99
-	OpClanChatRecv  = 100 // clan chat message
-	OpClanPositions = 101 // periodic clan member positions
-	OpBattleRoyale  = 102 // battle royale zone update
-	OpPowerupState  = 103 // powerup inventory state (type + charges)
+	OpWorldUpdate    = 16
+	OpCamera         = 17
+	OpClearAll       = 18
+	OpClearMine      = 20
+	OpMultiboxState  = 22 // multibox state notification
+	OpAddMyCell      = 32
+	OpAddMultiCell   = 33 // like AddMyCell but for multi player cells
+	OpLeaderboardT   = 48
+	OpLeaderboardF   = 49
+	OpBorder         = 64
+	OpChatRecv       = 99
+	OpClanChatRecv   = 100 // clan chat message
+	OpClanPositions  = 101 // periodic clan member positions
+	OpBattleRoyale   = 102 // battle royale zone update
+	OpPowerupState   = 103 // powerup inventory state (type + charges)
 	OpReconnectToken = 104 // reconnect token for session resume
-	OpTankLobby     = 34  // tank lobby state update (JSON payload)
-	OpTankCursors   = 35  // tank teammate cursor positions (binary)
-	OpPasswordErr   = 180
-	OpSpawnResult   = 221
-	OpPingReply     = 254
+	OpTankLobby      = 34  // tank lobby state update (JSON payload)
+	OpTankCursors    = 35  // tank teammate cursor positions (binary)
+	OpPasswordErr    = 180
+	OpSpawnResult    = 221
+	OpPingReply      = 254
 )
 
 // ShuffleTable is a 256-byte opcode permutation table.
