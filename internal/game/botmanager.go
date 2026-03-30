@@ -75,3 +75,52 @@ func (bm *BotManager) Tick() {
 func (bm *BotManager) BotCount() int {
 	return len(bm.bots)
 }
+
+// SetCount dynamically adjusts the target bot count. Adds or removes bots accordingly.
+func (bm *BotManager) SetCount(n int) {
+	if n < 0 {
+		n = 0
+	}
+	bm.count = n
+	// Add bots if needed
+	for len(bm.bots) < n {
+		bm.addBot()
+	}
+	// Remove excess bots
+	for len(bm.bots) > n {
+		last := bm.bots[len(bm.bots)-1]
+		bm.engine.RemovePlayer(last.Player.ID)
+		bm.bots = bm.bots[:len(bm.bots)-1]
+	}
+	log.Printf("BotManager: adjusted count to %d", n)
+}
+
+// GetBotList returns a snapshot of all bot info for the admin API.
+func (bm *BotManager) GetBotList() []BotInfo {
+	out := make([]BotInfo, 0, len(bm.bots))
+	for _, b := range bm.bots {
+		mass := 0.0
+		for _, c := range b.Player.Cells {
+			mass += c.Size * c.Size / 100
+		}
+		out = append(out, BotInfo{
+			ID:     b.Player.ID,
+			Name:   b.Player.Name,
+			Skin:   b.Player.Skin,
+			Effect: b.Player.Effect,
+			Alive:  b.Player.Alive,
+			Mass:   int(mass),
+		})
+	}
+	return out
+}
+
+// BotInfo is a serializable snapshot of one bot.
+type BotInfo struct {
+	ID     uint32 `json:"id"`
+	Name   string `json:"name"`
+	Skin   string `json:"skin"`
+	Effect string `json:"effect"`
+	Alive  bool   `json:"alive"`
+	Mass   int    `json:"mass"`
+}

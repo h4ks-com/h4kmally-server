@@ -88,6 +88,7 @@ func main() {
 	if botCount > 0 {
 		botMgr = game.NewBotManager(engine, botCount, br)
 	}
+	server.BotMgr = botMgr
 
 	// Initialize auth (Logto OAuth2)
 	logtoEndpoint := os.Getenv("LOGTO_ENDPOINT")
@@ -250,6 +251,17 @@ func main() {
 		mux.HandleFunc("/api/admin/marketplace/reverse", marketplaceHandler.HandleAdminReverse)
 	}
 
+	// Replay endpoint (admin only)
+	mux.HandleFunc("/api/admin/replay", server.HandleReplay)
+
+	// Bot management endpoints (admin only)
+	mux.HandleFunc("/api/admin/bots", server.HandleBotList)
+	mux.HandleFunc("/api/admin/bots/set-count", server.HandleBotSetCount)
+
+	// Create replay buffer (record every 5 ticks = 5Hz, keep 60 seconds)
+	replayBuf := game.NewReplayBuffer(5, 60)
+	server.ReplayBuffer = replayBuf
+
 	// CORS middleware for all routes
 	handler := corsMiddleware(mux)
 
@@ -266,6 +278,10 @@ func main() {
 
 		for range ticker.C {
 			updated, eaten, removed, tickNum := engine.Tick()
+
+			// Record replay frame (lightweight, skips most ticks)
+			replayBuf.RecordTick(tickNum, engine.SnapshotCells())
+
 			if botMgr != nil {
 				botMgr.Tick()
 			}

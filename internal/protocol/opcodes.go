@@ -52,6 +52,7 @@ const (
 	OpClanPositions = 101 // periodic clan member positions
 	OpBattleRoyale  = 102 // battle royale zone update
 	OpPowerupState  = 103 // powerup inventory state (type + charges)
+	OpReconnectToken = 104 // reconnect token for session resume
 	OpTankLobby     = 34  // tank lobby state update (JSON payload)
 	OpTankCursors   = 35  // tank teammate cursor positions (binary)
 	OpPasswordErr   = 180
@@ -331,6 +332,15 @@ func BuildTankCursors(st *ShuffleTable, cursors []TankCursorEntry) []byte {
 		buf = append(buf, byte(c.X), byte(c.X>>8))
 		buf = append(buf, byte(c.Y), byte(c.Y>>8))
 	}
+	return buf
+}
+
+// BuildReconnectToken sends a reconnect token to the client.
+func BuildReconnectToken(st *ShuffleTable, token string) []byte {
+	tokenBytes := []byte(token)
+	buf := make([]byte, 1+len(tokenBytes))
+	buf[0] = st.Forward[OpReconnectToken]
+	copy(buf[1:], tokenBytes)
 	return buf
 }
 

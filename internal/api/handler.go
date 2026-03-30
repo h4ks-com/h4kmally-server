@@ -2,6 +2,8 @@ package api
 
 import (
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"image"
@@ -17,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	sync_atomic "sync/atomic"
@@ -115,6 +118,9 @@ type Client struct {
 	// Accessed atomically (unix nanoseconds). If no activity for 10s, the
 	// server force-disconnects the client to prevent ghost cells.
 	lastActivity int64 // atomic: time.Now().UnixNano()
+
+	// Reconnect token: issued during handshake, allows client to resume session.
+	reconnectToken string
 }
 
 // Server manages all connected clients and the game engine.
@@ -125,15 +131,76 @@ type Server struct {
 	ClanStore    *ClanStore
 	BattleRoyale *game.BattleRoyale
 	TankMgr      *game.TankManager
+	ReplayBuffer *game.ReplayBuffer
+	BotMgr       *game.BotManager
 	clients      map[*Client]bool
 	mu           sync.RWMutex
+
+	// Reconnect: suspended players waiting for reconnect (token → player info)
+	suspended   map[string]*SuspendedPlayer
+	suspendedMu sync.Mutex
+}
+
+// SuspendedPlayer holds a disconnected player's state for a brief reconnect window.
+type SuspendedPlayer struct {
+	Player    *game.Player
+	UserSub   string
+	ExpiresAt time.Time
 }
 
 // NewServer creates a new game server.
 func NewServer(engine *game.Engine) *Server {
-	return &Server{
-		Engine:  engine,
-		clients: make(map[*Client]bool),
+	s := &Server{
+		Engine:    engine,
+		clients:   make(map[*Client]bool),
+		suspended: make(map[string]*SuspendedPlayer),
+	}
+	// Start goroutine to expire suspended players
+	go s.cleanupSuspendedPlayers()
+	return s
+}
+
+// suspendPlayer saves a player for reconnect during a grace window.
+func (s *Server) suspendPlayer(token string, player *game.Player, userSub string) {
+	s.suspendedMu.Lock()
+	defer s.suspendedMu.Unlock()
+	s.suspended[token] = &SuspendedPlayer{
+		Player:    player,
+		UserSub:   userSub,
+		ExpiresAt: time.Now().Add(5 * time.Second),
+	}
+}
+
+// resumePlayer returns a suspended player for a token, removing it from the map.
+// Returns nil if not found or expired.
+func (s *Server) resumePlayer(token string) *SuspendedPlayer {
+	s.suspendedMu.Lock()
+	defer s.suspendedMu.Unlock()
+	sp, ok := s.suspended[token]
+	if !ok || time.Now().After(sp.ExpiresAt) {
+		delete(s.suspended, token)
+		return nil
+	}
+	delete(s.suspended, token)
+	return sp
+}
+
+// cleanupSuspendedPlayers removes expired suspended players every second.
+func (s *Server) cleanupSuspendedPlayers() {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for range ticker.C {
+		now := time.Now()
+		s.suspendedMu.Lock()
+		for token, sp := range s.suspended {
+			if now.After(sp.ExpiresAt) {
+				// Grace period expired — remove player's cells
+				s.Engine.QueueRemovePlayer(sp.Player.ID)
+				delete(s.suspended, token)
+				log.Printf("Suspended player %q expired, removing cells", sp.Player.Name)
+			}
+		}
+		s.suspendedMu.Unlock()
 	}
 }
 
@@ -190,6 +257,22 @@ func (s *Server) HandleWS(w http.ResponseWriter, r *http.Request) {
 		lastActivity: time.Now().UnixNano(),
 	}
 
+	// Check for reconnect token — resume suspended player
+	reconnectToken := r.URL.Query().Get("reconnect")
+	if reconnectToken != "" {
+		sp := s.resumePlayer(reconnectToken)
+		if sp != nil {
+			client.player = sp.Player
+			client.alive = true
+			log.Printf("Player %q (ID %d) resumed via reconnect token", sp.Player.Name, sp.Player.ID)
+		}
+	}
+
+	// Generate a new reconnect token for this connection
+	tokenBytes := make([]byte, 16)
+	rand.Read(tokenBytes)
+	client.reconnectToken = hex.EncodeToString(tokenBytes)
+
 	// One connection per account: kick any existing connection from the
 	// same authenticated user. Multiple guests / different users on the
 	// same IP are allowed.
@@ -232,8 +315,11 @@ func (c *Client) handleConnection() {
 		if inTank && tankSess != nil {
 			c.server.handleTankMemberDisconnect(c, tankSess)
 		} else {
-			// Normal disconnect: remove player
-			if c.player != nil {
+			// Normal disconnect: suspend player for reconnect if alive
+			if c.player != nil && c.player.Alive && c.reconnectToken != "" {
+				c.server.suspendPlayer(c.reconnectToken, c.player, c.userSub)
+				log.Printf("Player %q (ID %d) suspended for reconnect", c.player.Name, c.player.ID)
+			} else if c.player != nil {
 				c.engine.QueueRemovePlayer(c.player.ID)
 				log.Printf("Player %q (ID %d) disconnected", c.player.Name, c.player.ID)
 			}
@@ -290,6 +376,17 @@ func (c *Client) handleConnection() {
 	copy(borderExt, border)
 	borderExt[33] = 0x01
 	c.sendMsg(borderExt)
+
+	// === Step 3b: Send reconnect token ===
+	c.sendMsg(protocol.BuildReconnectToken(c.shuffle, c.reconnectToken))
+
+	// === Step 3c: Resume reconnected player's cells ===
+	if c.player != nil && c.player.Alive {
+		for _, cell := range c.player.Cells {
+			c.sendMsg(protocol.BuildAddMyCell(c.shuffle, cell.ID))
+			c.knownMyCells[cell.ID] = true
+		}
+	}
 
 	log.Printf("Client connected, handshake complete")
 
@@ -2630,4 +2727,111 @@ func (s *Server) HandleActivatePowerup(w http.ResponseWriter, r *http.Request) {
 		"ok":        true,
 		"inventory": activeClient.player.PowerupInventory,
 	})
+}
+
+// HandleReplay serves the last N seconds of game replay data (admin only).
+func (s *Server) HandleReplay(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if !s.checkAdmin(r) {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+
+	if s.ReplayBuffer == nil {
+		http.Error(w, "Replay not available", 503)
+		return
+	}
+
+	// Default 30 seconds, max 60
+	seconds := 30
+	if q := r.URL.Query().Get("seconds"); q != "" {
+		if n, err := strconv.Atoi(q); err == nil && n > 0 && n <= 60 {
+			seconds = n
+		}
+	}
+
+	data, err := s.ReplayBuffer.GetReplay(seconds)
+	if err != nil {
+		http.Error(w, "Failed to encode replay", 500)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write(data)
+}
+
+// HandleBotList returns the list of bots and their status (admin only).
+func (s *Server) HandleBotList(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "GET" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if !s.checkAdmin(r) {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	if s.BotMgr == nil {
+		json.NewEncoder(w).Encode(map[string]interface{}{"bots": []interface{}{}, "count": 0})
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"bots":  s.BotMgr.GetBotList(),
+		"count": s.BotMgr.BotCount(),
+	})
+}
+
+// HandleBotSetCount adjusts the bot count (admin only).
+func (s *Server) HandleBotSetCount(w http.ResponseWriter, r *http.Request) {
+	if r.Method != "POST" {
+		http.Error(w, "Method not allowed", 405)
+		return
+	}
+	if !s.checkAdmin(r) {
+		http.Error(w, "Unauthorized", 401)
+		return
+	}
+	var req struct {
+		Count int `json:"count"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Bad request", 400)
+		return
+	}
+	if req.Count < 0 || req.Count > 200 {
+		http.Error(w, "Count must be 0-200", 400)
+		return
+	}
+
+	if s.BotMgr == nil {
+		// Create BotManager on-the-fly if it doesn't exist
+		s.BotMgr = game.NewBotManager(s.Engine, req.Count, s.BattleRoyale)
+	} else {
+		s.BotMgr.SetCount(req.Count)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "count": s.BotMgr.BotCount()})
+}
+
+// checkAdmin validates admin auth for server-level handlers. Returns true if authorized.
+func (s *Server) checkAdmin(r *http.Request) bool {
+	sessionToken := r.URL.Query().Get("session")
+	if sessionToken == "" {
+		auth := r.Header.Get("Authorization")
+		if strings.HasPrefix(auth, "Bearer ") {
+			sessionToken = auth[7:]
+		}
+	}
+	if s.AuthMgr == nil {
+		return false
+	}
+	session := s.AuthMgr.ValidateSession(sessionToken)
+	if session == nil {
+		return false
+	}
+	return s.AuthMgr.UserStore.IsAdmin(session.UserSub)
 }
