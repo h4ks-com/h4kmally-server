@@ -34,18 +34,19 @@ const (
 
 // Bounty represents an active bounty on a player.
 type Bounty struct {
-	ID          string           `json:"id"`
-	PosterSub   string           `json:"posterSub"`
-	PosterName  string           `json:"posterName"`
-	TargetName  string           `json:"targetName"`  // case-insensitive match
-	RewardType  BountyRewardType `json:"rewardType"`
-	RewardKey   string           `json:"rewardKey,omitempty"`   // powerup type (e.g. "speed_boost") — blank for beans
-	RewardAmount int             `json:"rewardAmount"`
-	Status      string           `json:"status"` // "active", "claimed", "cancelled"
-	ClaimedBy   string           `json:"claimedBy,omitempty"`   // name of the killer who claimed it
-	ClaimedSub  string           `json:"claimedSub,omitempty"`  // sub of the killer
-	CreatedAt   int64            `json:"createdAt"`
-	ClaimedAt   int64            `json:"claimedAt,omitempty"`
+	ID           string           `json:"id"`
+	PosterSub    string           `json:"posterSub"`
+	PosterName   string           `json:"posterName"`
+	TargetSub    string           `json:"targetSub"`              // account sub of target (required)
+	TargetName   string           `json:"targetName"`             // display name at time of creation
+	RewardType   BountyRewardType `json:"rewardType"`
+	RewardKey    string           `json:"rewardKey,omitempty"`    // powerup type (e.g. "speed_boost") — blank for beans
+	RewardAmount int              `json:"rewardAmount"`
+	Status       string           `json:"status"`                 // "active", "pending_payment", "claimed", "cancelled"
+	ClaimedBy    string           `json:"claimedBy,omitempty"`    // name of the killer who claimed it
+	ClaimedSub   string           `json:"claimedSub,omitempty"`   // sub of the killer
+	CreatedAt    int64            `json:"createdAt"`
+	ClaimedAt    int64            `json:"claimedAt,omitempty"`
 }
 
 // BountyHandler manages the bounty system.
@@ -55,6 +56,13 @@ type BountyHandler struct {
 	authMgr   *AuthManager
 	userStore *UserStore
 	payment   PaymentProvider // nil if no payment provider
+	getOnlineAuthUsers func() []OnlineUser // injected by server
+}
+
+// OnlineUser represents an authenticated user currently connected.
+type OnlineUser struct {
+	Sub         string `json:"sub"`
+	DisplayName string `json:"displayName"`
 }
 
 // NewBountyHandler creates a new bounty handler and loads persisted bounties.
@@ -66,6 +74,11 @@ func NewBountyHandler(authMgr *AuthManager, userStore *UserStore, payment Paymen
 	}
 	bh.load()
 	return bh
+}
+
+// SetOnlineUsersFn injects the callback used to retrieve online authenticated users.
+func (bh *BountyHandler) SetOnlineUsersFn(fn func() []OnlineUser) {
+	bh.getOnlineAuthUsers = fn
 }
 
 // ── Persistence ───────────────────────────────────────────────────────────────
@@ -105,6 +118,15 @@ func (bh *BountyHandler) OnPlayerKilled(victimName, victimSub, killerName, kille
 	if killerName == "" {
 		return nil // died to virus/edge/etc — no bounty claim
 	}
+	// Only authenticated killers can claim bounties.
+	// If an unauthed user or bot kills the target, the bounty stays active.
+	if killerSub == "" {
+		return nil
+	}
+	// Victim must be an authenticated user with a matching sub
+	if victimSub == "" {
+		return nil
+	}
 
 	bh.mu.Lock()
 	defer bh.mu.Unlock()
@@ -116,11 +138,12 @@ func (bh *BountyHandler) OnPlayerKilled(victimName, victimSub, killerName, kille
 		if b.Status != "active" {
 			continue
 		}
-		if !strings.EqualFold(b.TargetName, victimName) {
+		// Match by account sub, not by display name
+		if b.TargetSub != victimSub {
 			continue
 		}
 		// Don't let the poster claim their own bounty
-		if b.PosterSub == killerSub && killerSub != "" {
+		if b.PosterSub == killerSub {
 			continue
 		}
 
@@ -245,7 +268,7 @@ func (bh *BountyHandler) HandleMyBounties(w http.ResponseWriter, r *http.Request
 
 // HandleCreateBounty creates a new bounty on a player.
 // POST /api/bounties/create?session=TOKEN
-// Body: { "targetName": "SomePlayer", "rewardType": "beans"|"powerup", "rewardKey": "speed_boost", "rewardAmount": 50 }
+// Body: { "targetSub": "user-sub-id", "rewardType": "beans"|"powerup", "rewardKey": "speed_boost", "rewardAmount": 50 }
 func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	if r.Method == "OPTIONS" {
@@ -265,7 +288,7 @@ func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Reque
 	}
 
 	var body struct {
-		TargetName   string           `json:"targetName"`
+		TargetSub    string           `json:"targetSub"`
 		RewardType   BountyRewardType `json:"rewardType"`
 		RewardKey    string           `json:"rewardKey"`
 		RewardAmount int              `json:"rewardAmount"`
@@ -276,10 +299,10 @@ func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	body.TargetName = strings.TrimSpace(body.TargetName)
-	if body.TargetName == "" {
+	body.TargetSub = strings.TrimSpace(body.TargetSub)
+	if body.TargetSub == "" {
 		w.WriteHeader(400)
-		w.Write([]byte(`{"error":"targetName is required"}`))
+		w.Write([]byte(`{"error":"targetSub is required"}`))
 		return
 	}
 	if body.RewardAmount < 1 {
@@ -289,14 +312,27 @@ func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Reque
 	}
 
 	// Can't place a bounty on yourself
-	posterName := session.UserUsername
-	if posterName == "" {
-		posterName = session.UserName
-	}
-	if strings.EqualFold(body.TargetName, posterName) {
+	if body.TargetSub == session.UserSub {
 		w.WriteHeader(400)
 		w.Write([]byte(`{"error":"you cannot place a bounty on yourself"}`))
 		return
+	}
+
+	// Look up target user in the user store to get display name
+	targetUser := bh.userStore.Get(body.TargetSub)
+	if targetUser == nil {
+		w.WriteHeader(400)
+		w.Write([]byte(`{"error":"target user not found — they must have an account"}`))
+		return
+	}
+	targetDisplayName := targetUser.Name
+	if targetDisplayName == "" {
+		targetDisplayName = body.TargetSub
+	}
+
+	posterName := session.UserUsername
+	if posterName == "" {
+		posterName = session.UserName
 	}
 
 	// Validate reward type and deduct cost
@@ -373,7 +409,8 @@ func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Reque
 		ID:           generateOrderID(),
 		PosterSub:    session.UserSub,
 		PosterName:   posterName,
-		TargetName:   body.TargetName,
+		TargetSub:    body.TargetSub,
+		TargetName:   targetDisplayName,
 		RewardType:   body.RewardType,
 		RewardKey:    body.RewardKey,
 		RewardAmount: body.RewardAmount,
@@ -384,8 +421,8 @@ func (bh *BountyHandler) HandleCreateBounty(w http.ResponseWriter, r *http.Reque
 	bh.save()
 	bh.mu.Unlock()
 
-	log.Printf("[Bounty] Created: id=%s poster=%s target=%s reward=%s/%s×%d",
-		bounty.ID, posterName, body.TargetName, body.RewardType, body.RewardKey, body.RewardAmount)
+	log.Printf("[Bounty] Created: id=%s poster=%s target=%s(%s) reward=%s/%s×%d",
+		bounty.ID, posterName, targetDisplayName, body.TargetSub, body.RewardType, body.RewardKey, body.RewardAmount)
 
 	// For beans bounties, return a payment URL so the poster can pay
 	// (skip for merchant — already activated above)
@@ -490,6 +527,80 @@ func (bh *BountyHandler) HandleCancelBounty(w http.ResponseWriter, r *http.Reque
 	}
 
 	json.NewEncoder(w).Encode(map[string]interface{}{"ok": true, "bounty": target})
+}
+
+// HandleOnlineUsers returns a list of currently connected authenticated users.
+// GET /api/bounties/online-users
+func (bh *BountyHandler) HandleOnlineUsers(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "GET" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+
+	var users []OnlineUser
+	if bh.getOnlineAuthUsers != nil {
+		users = bh.getOnlineAuthUsers()
+	}
+	if users == nil {
+		users = []OnlineUser{}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"users": users,
+	})
+}
+
+// HandleBountiesOnMe returns active bounties where the authenticated user is the target.
+// GET /api/bounties/on-me?session=TOKEN
+func (bh *BountyHandler) HandleBountiesOnMe(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if r.Method == "OPTIONS" {
+		w.WriteHeader(200)
+		return
+	}
+	if r.Method != "GET" {
+		w.WriteHeader(405)
+		w.Write([]byte(`{"error":"method not allowed"}`))
+		return
+	}
+	session := bh.authMgr.ValidateSession(r.URL.Query().Get("session"))
+	if session == nil {
+		w.WriteHeader(401)
+		w.Write([]byte(`{"error":"unauthorized"}`))
+		return
+	}
+
+	bh.mu.Lock()
+	onMe := make([]*Bounty, 0)
+	for _, b := range bh.bounties {
+		if b.Status == "active" && b.TargetSub == session.UserSub {
+			onMe = append(onMe, b)
+		}
+	}
+	bh.mu.Unlock()
+
+	// Calculate total reward summary
+	totalBeans := 0
+	totalPowerups := 0
+	for _, b := range onMe {
+		if b.RewardType == BountyRewardBeans {
+			totalBeans += b.RewardAmount
+		} else {
+			totalPowerups += b.RewardAmount
+		}
+	}
+
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"bounties":    onMe,
+		"totalBeans":  totalBeans,
+		"totalPowerups": totalPowerups,
+	})
 }
 
 // ── Beans Payment Polling ─────────────────────────────────────────────────────

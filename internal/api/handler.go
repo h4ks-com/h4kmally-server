@@ -2739,6 +2739,41 @@ func (s *Server) HandleActivatePowerup(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// GetOnlineAuthUsers returns a de-duplicated list of authenticated users
+// currently connected to the server. Used by the bounty system to provide
+// an autocomplete list for bounty targets.
+func (s *Server) GetOnlineAuthUsers() []OnlineUser {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	seen := make(map[string]bool)
+	var users []OnlineUser
+	for c := range s.clients {
+		if c.userSub == "" || seen[c.userSub] {
+			continue
+		}
+		seen[c.userSub] = true
+		name := ""
+		if c.player != nil {
+			name = c.player.Name
+		}
+		// Fall back to user store name if player name is empty
+		if name == "" {
+			if u := s.AuthMgr.UserStore.Get(c.userSub); u != nil {
+				name = u.Name
+			}
+		}
+		if name == "" {
+			name = c.userSub
+		}
+		users = append(users, OnlineUser{
+			Sub:         c.userSub,
+			DisplayName: name,
+		})
+	}
+	return users
+}
+
 // HandleBotList returns the list of bots and their status (admin only).
 func (s *Server) HandleBotList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != "GET" {

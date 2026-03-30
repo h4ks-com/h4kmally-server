@@ -262,8 +262,11 @@ func main() {
 
 	// Bounty system endpoints
 	if bountyHandler != nil {
+		bountyHandler.SetOnlineUsersFn(server.GetOnlineAuthUsers)
 		mux.HandleFunc("/api/bounties", bountyHandler.HandleListBounties)
 		mux.HandleFunc("/api/bounties/my", bountyHandler.HandleMyBounties)
+		mux.HandleFunc("/api/bounties/on-me", bountyHandler.HandleBountiesOnMe)
+		mux.HandleFunc("/api/bounties/online-users", bountyHandler.HandleOnlineUsers)
 		mux.HandleFunc("/api/bounties/create", bountyHandler.HandleCreateBounty)
 		mux.HandleFunc("/api/bounties/cancel", bountyHandler.HandleCancelBounty)
 		log.Println("Bounty system routes registered")
